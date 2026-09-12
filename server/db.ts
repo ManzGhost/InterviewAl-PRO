@@ -1,6 +1,5 @@
 import fs from 'fs';
 import path from 'path';
-import bcrypt from 'bcryptjs';
 import { UserModel } from './models/UserModel';
 import {
   User,
@@ -18,7 +17,6 @@ import {
   AssessmentType,
   ViolationType,
   XpTransaction,
-  XpTransactionType,
   XpAction,
   XpSettings,
 } from './types';
@@ -76,6 +74,23 @@ class DatabaseService {
 
   constructor() {
     this.data = this.loadOrSeed();
+    this.syncFromMongoAtlas();
+  }
+
+  // MongoDB Atlas se live users ko memory me load karna
+  public async syncFromMongoAtlas(): Promise<void> {
+    try {
+      const atlasUsers = await UserModel.find({}).lean();
+      if (atlasUsers && atlasUsers.length > 0) {
+        this.data.users = atlasUsers.map((u: any) => ({
+          ...u,
+          id: u.id || u._id?.toString(),
+        })) as User[];
+        console.log(`[MongoDB Atlas] Successfully loaded ${this.data.users.length} users into live memory.`);
+      }
+    } catch (err: any) {
+      console.warn(`[MongoDB Atlas] Sync from Atlas waiting for DB connection...`);
+    }
   }
 
   private loadOrSeed(): DatabaseSchema {
@@ -86,67 +101,28 @@ class DatabaseService {
       if (fs.existsSync(DB_FILE)) {
         const fileContent = fs.readFileSync(DB_FILE, 'utf-8');
         const parsed = JSON.parse(fileContent);
-        if (parsed.users) {
-          if (!parsed.resumes) parsed.resumes = [];
-          if (!parsed.jobDescriptions) parsed.jobDescriptions = [];
-          if (!parsed.interviews) parsed.interviews = [];
-          if (!parsed.performances) parsed.performances = [];
-          if (!parsed.achievements) parsed.achievements = [];
-          if (!parsed.mcqQuestions) parsed.mcqQuestions = [];
-          if (!parsed.interviewQuestions) parsed.interviewQuestions = defaultInterviewQuestions;
-          if (!parsed.scheduledInterviews) parsed.scheduledInterviews = [];
-          if (!parsed.notifications) parsed.notifications = [];
-          if (!parsed.secureAssessments) parsed.secureAssessments = [];
-          if (!parsed.xpTransactions) parsed.xpTransactions = [];
-          if (!parsed.xpSettings) parsed.xpSettings = { ...defaultXpSettings };
-          if (typeof parsed.aiRequestsCount !== 'number') parsed.aiRequestsCount = 0;
-          return parsed;
-        }
+        return {
+          users: [], // File me kabhi save nahi honge, direct MongoDB Atlas se load honge
+          resumes: parsed.resumes || [],
+          jobDescriptions: parsed.jobDescriptions || [],
+          interviews: parsed.interviews || [],
+          performances: parsed.performances || [],
+          achievements: parsed.achievements || [],
+          mcqQuestions: parsed.mcqQuestions || [],
+          interviewQuestions: parsed.interviewQuestions || defaultInterviewQuestions,
+          scheduledInterviews: parsed.scheduledInterviews || [],
+          notifications: parsed.notifications || [],
+          secureAssessments: parsed.secureAssessments || [],
+          xpTransactions: parsed.xpTransactions || [],
+          xpSettings: parsed.xpSettings || { ...defaultXpSettings },
+          aiRequestsCount: parsed.aiRequestsCount || 0,
+        };
       }
     } catch (err) {
-      console.warn('Could not read existing database.json, seeding new data...', err);
+      console.warn('Could not read existing database.json, seeding empty schema...', err);
     }
-    return this.createSeedData();
-  }
-
-  private save(): void {
-    try {
-      if (!fs.existsSync(DATA_DIR)) {
-        fs.mkdirSync(DATA_DIR, { recursive: true });
-      }
-      fs.writeFileSync(DB_FILE, JSON.stringify(this.data, null, 2), 'utf-8');
-    } catch (err) {
-      console.error('Failed to persist database.json:', err);
-    }
-  }
-
-  private createSeedData(): DatabaseSchema {
-    const salt = bcrypt.genSaltSync(10);
-    const adminPasswordHash = bcrypt.hashSync('Admin@12345', salt);
-
-    const adminUser: User = {
-      id: 'user_admin_001',
-      name: 'System Admin',
-      email: 'admin@interviewai.com',
-      passwordHash: adminPasswordHash,
-      role: 'ADMIN',
-      adminCode: 'ADMIN-SYS1',
-      college: 'Indian Institute of Technology (IIT)',
-      education: 'M.Tech in Computer Science',
-      skills: ['Java', 'Spring Boot', 'System Design', 'React', 'MongoDB'],
-      preferredJobRole: 'Lead Software Architect',
-      profileImage: 'https://images.unsplash.com/photo-1534528741775-53994a69daeb?w=150&auto=format&fit=crop&q=80',
-      xpPoints: 3450,
-      level: 'Interview Master',
-      currentStreak: 12,
-      emailVerified: true,
-      isOnLeaderboard: true,
-      createdAt: new Date(Date.now() - 30 * 86400000).toISOString(),
-      updatedAt: new Date().toISOString(),
-    };
-
     return {
-      users: [adminUser],
+      users: [],
       resumes: [],
       jobDescriptions: [],
       interviews: [],
@@ -163,16 +139,28 @@ class DatabaseService {
     };
   }
 
+  private save(): void {
+    try {
+      if (!fs.existsSync(DATA_DIR)) {
+        fs.mkdirSync(DATA_DIR, { recursive: true });
+      }
+      // Users array ko hamesha empty save karein taaki local disk par koi data leak na ho
+      const dataToSave = { ...this.data, users: [] };
+      fs.writeFileSync(DB_FILE, JSON.stringify(dataToSave, null, 2), 'utf-8');
+    } catch (err) {
+      console.error('Failed to persist temporary database.json:', err);
+    }
+  }
+
   public populateAssignedAdmin(user: User): User {
     if (user.role === 'USER' || user.role === 'CANDIDATE') {
-      const targetAdminId = user.adminId || 'user_admin_001';
+      const targetAdminId = user.adminId;
       const admin = this.data.users.find((u) => u.id === targetAdminId);
       return {
         ...user,
-        adminId: targetAdminId,
         assignedAdmin: admin
-          ? { id: admin.id, name: admin.name, email: admin.email, adminCode: admin.adminCode || 'ADMIN-SYS1' }
-          : { id: 'user_admin_001', name: 'System Admin', email: 'admin@interviewai.com', adminCode: 'ADMIN-SYS1' },
+          ? { id: admin.id, name: admin.name, email: admin.email, adminCode: admin.adminCode }
+          : undefined,
       };
     }
     return user;
@@ -231,17 +219,13 @@ class DatabaseService {
     return populated;
   }
 
-  // --- Users CRUD & Atlas Sync ---
+  // --- CRUD: Only Save Directly to MongoDB Atlas ---
   public createUser(user: User): User {
-    if (user.role === 'USER' && !user.adminId) {
-      user.adminId = 'user_admin_001';
-    }
     this.data.users.push(user);
-    this.save();
 
     UserModel.create(user)
-      .then(() => console.log(`[MongoDB Atlas] User successfully synced: ${user.email}`))
-      .catch((err: any) => console.error(`[MongoDB Atlas] Error syncing user:`, err?.message));
+      .then(() => console.log(`[MongoDB Atlas] User successfully persisted: ${user.email}`))
+      .catch((err: any) => console.error(`[MongoDB Atlas] Error persisting user:`, err?.message));
 
     return this.populateAssignedAdmin(user);
   }
@@ -250,7 +234,6 @@ class DatabaseService {
     const idx = this.data.users.findIndex((u) => u.id === id);
     if (idx === -1) return undefined;
     this.data.users[idx] = { ...this.data.users[idx], ...updates, updatedAt: new Date().toISOString() };
-    this.save();
 
     UserModel.findOneAndUpdate({ id }, updates).catch((err: any) => {
       console.error(`[MongoDB Atlas] Error updating user:`, err?.message);
@@ -516,10 +499,6 @@ class DatabaseService {
   }
 
   public getXpSettings(): XpSettings {
-    if (!this.data.xpSettings) {
-      this.data.xpSettings = { ...defaultXpSettings };
-      this.save();
-    }
     return this.data.xpSettings;
   }
 
@@ -548,7 +527,7 @@ class DatabaseService {
   }
 
   public getInterviewQuestions(adminId?: string): InterviewQuestion[] {
-    if (!this.data.interviewQuestions) this.data.interviewQuestions = [...defaultInterviewQuestions];
+    if (!this.data.interviewQuestions) this.data.interviewQuestions = [];
     if (adminId) return this.data.interviewQuestions.filter((q) => !q.adminId || q.adminId === adminId);
     return this.data.interviewQuestions;
   }
@@ -604,7 +583,6 @@ class DatabaseService {
   }): SecureAssessmentSession {
     if (!this.data.secureAssessments) this.data.secureAssessments = [];
 
-    // Close any previous in-progress session for this candidate
     this.data.secureAssessments.forEach((s) => {
       if (s.candidateId === params.candidateId && s.status === 'IN_PROGRESS') {
         s.status = 'COMPLETED';
