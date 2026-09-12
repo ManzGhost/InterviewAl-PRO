@@ -72,9 +72,6 @@ export const defaultInterviewQuestions: InterviewQuestion[] = [
   }
 ];
 
-export const defaultScheduledInterviews: ScheduledInterview[] = [];
-export const defaultSecureAssessments: SecureAssessmentSession[] = [];
-
 class DatabaseService {
   private data: DatabaseSchema;
 
@@ -91,11 +88,19 @@ class DatabaseService {
         const fileContent = fs.readFileSync(DB_FILE, 'utf-8');
         const parsed = JSON.parse(fileContent);
         if (parsed.users) {
+          if (!parsed.resumes) parsed.resumes = [];
+          if (!parsed.jobDescriptions) parsed.jobDescriptions = [];
           if (!parsed.interviews) parsed.interviews = [];
+          if (!parsed.performances) parsed.performances = [];
+          if (!parsed.achievements) parsed.achievements = [];
+          if (!parsed.mcqQuestions) parsed.mcqQuestions = [];
+          if (!parsed.interviewQuestions) parsed.interviewQuestions = defaultInterviewQuestions;
           if (!parsed.scheduledInterviews) parsed.scheduledInterviews = [];
+          if (!parsed.notifications) parsed.notifications = [];
           if (!parsed.secureAssessments) parsed.secureAssessments = [];
           if (!parsed.xpTransactions) parsed.xpTransactions = [];
           if (!parsed.xpSettings) parsed.xpSettings = { ...defaultXpSettings };
+          if (typeof parsed.aiRequestsCount !== 'number') parsed.aiRequestsCount = 0;
           return parsed;
         }
       }
@@ -227,7 +232,7 @@ class DatabaseService {
     return populated;
   }
 
-  // --- Core Write: Directly sync to MongoDB Atlas ---
+  // --- Users CRUD & Atlas Sync ---
   public createUser(user: User): User {
     if (user.role === 'USER' && !user.adminId) {
       user.adminId = 'user_admin_001';
@@ -260,12 +265,12 @@ class DatabaseService {
     if (userIdx === -1) return { success: false };
 
     const [deletedUser] = this.data.users.splice(userIdx, 1);
-    this.data.resumes = this.data.resumes.filter((r) => r.userId !== userId);
-    this.data.jobDescriptions = this.data.jobDescriptions.filter((j) => j.userId !== userId);
-    this.data.interviews = this.data.interviews.filter((i) => i.userId !== userId);
-    this.data.performances = this.data.performances.filter((p) => p.userId !== userId);
-    this.data.achievements = this.data.achievements.filter((a) => a.userId !== userId);
-    this.data.notifications = this.data.notifications.filter((n) => n.userId !== userId);
+    this.data.resumes = (this.data.resumes || []).filter((r) => r.userId !== userId);
+    this.data.jobDescriptions = (this.data.jobDescriptions || []).filter((j) => j.userId !== userId);
+    this.data.interviews = (this.data.interviews || []).filter((i) => i.userId !== userId);
+    this.data.performances = (this.data.performances || []).filter((p) => p.userId !== userId);
+    this.data.achievements = (this.data.achievements || []).filter((a) => a.userId !== userId);
+    this.data.notifications = (this.data.notifications || []).filter((n) => n.userId !== userId);
 
     this.save();
 
@@ -279,6 +284,43 @@ class DatabaseService {
   public deleteUser(id: string): boolean {
     const result = this.permanentlyDeleteUserAndAllData(id);
     return result.success;
+  }
+
+  // --- Resumes ---
+  public getResumesByUser(userId: string): ResumeDocument[] {
+    return (this.data.resumes || []).filter((r) => r.userId === userId);
+  }
+
+  public saveResume(resume: ResumeDocument): ResumeDocument {
+    if (!this.data.resumes) this.data.resumes = [];
+    const idx = this.data.resumes.findIndex((r) => r.id === resume.id);
+    if (idx >= 0) {
+      this.data.resumes[idx] = resume;
+    } else {
+      this.data.resumes.unshift(resume);
+    }
+    this.save();
+    return resume;
+  }
+
+  public deleteResume(id: string, userId: string): boolean {
+    const idx = (this.data.resumes || []).findIndex((r) => r.id === id && r.userId === userId);
+    if (idx === -1) return false;
+    this.data.resumes.splice(idx, 1);
+    this.save();
+    return true;
+  }
+
+  // --- Job Descriptions ---
+  public getJobDescriptionsByUser(userId: string): JobDescriptionDocument[] {
+    return (this.data.jobDescriptions || []).filter((j) => j.userId === userId);
+  }
+
+  public saveJobDescription(job: JobDescriptionDocument): JobDescriptionDocument {
+    if (!this.data.jobDescriptions) this.data.jobDescriptions = [];
+    this.data.jobDescriptions.unshift(job);
+    this.save();
+    return job;
   }
 
   // --- Interviews ---
@@ -306,6 +348,29 @@ class DatabaseService {
     return interview;
   }
 
+  // --- Performance & Achievements ---
+  public getPerformancesByUser(userId: string): PerformanceRecord[] {
+    return (this.data.performances || []).filter((p) => p.userId === userId);
+  }
+
+  public addPerformance(perf: PerformanceRecord): PerformanceRecord {
+    if (!this.data.performances) this.data.performances = [];
+    this.data.performances.push(perf);
+    this.save();
+    return perf;
+  }
+
+  public getAchievementsByUser(userId: string): AchievementItem[] {
+    return (this.data.achievements || []).filter((a) => a.userId === userId);
+  }
+
+  public addAchievement(item: AchievementItem): AchievementItem {
+    if (!this.data.achievements) this.data.achievements = [];
+    this.data.achievements.unshift(item);
+    this.save();
+    return item;
+  }
+
   // --- Notifications ---
   public getNotificationsByUser(userId: string): NotificationItem[] {
     return (this.data.notifications || []).filter((n) => n.userId === userId);
@@ -316,6 +381,56 @@ class DatabaseService {
     this.data.notifications.unshift(notif);
     this.save();
     return notif;
+  }
+
+  // --- AI Requests Count ---
+  public getAiRequestsCount(): number {
+    return this.data.aiRequestsCount || 0;
+  }
+
+  public incrementAiRequests(): number {
+    this.data.aiRequestsCount = (this.data.aiRequestsCount || 0) + 1;
+    this.save();
+    return this.data.aiRequestsCount;
+  }
+
+  // --- XP Settings & Transactions ---
+  public awardXp(userId: string, points: number): { xp: number; level: string; leveledUp: boolean } {
+    const user = this.getUserById(userId);
+    if (!user) return { xp: 0, level: 'Beginner', leveledUp: false };
+    const oldXp = user.xpPoints || 0;
+    const newXp = oldXp + points;
+    let newLevel = 'Beginner';
+    if (newXp >= 3000) newLevel = 'Interview Master';
+    else if (newXp >= 1800) newLevel = 'Advanced';
+    else if (newXp >= 800) newLevel = 'Intermediate';
+
+    const leveledUp = newLevel !== user.level;
+    this.updateUser(userId, { xpPoints: newXp, level: newLevel });
+    return { xp: newXp, level: newLevel, leveledUp };
+  }
+
+  public deductXp(userId: string, points: number): { xp: number; level: string; deducted: number; success: boolean } {
+    const user = this.getUserById(userId);
+    if (!user) return { xp: 0, level: 'Beginner', deducted: 0, success: false };
+    const oldXp = user.xpPoints || 0;
+    const deducted = Math.min(oldXp, Math.max(0, points));
+    const newXp = Math.max(0, oldXp - deducted);
+    let newLevel = 'Beginner';
+    if (newXp >= 3000) newLevel = 'Interview Master';
+    else if (newXp >= 1800) newLevel = 'Advanced';
+    else if (newXp >= 800) newLevel = 'Intermediate';
+
+    this.updateUser(userId, { xpPoints: newXp, level: newLevel });
+    return { xp: newXp, level: newLevel, deducted, success: true };
+  }
+
+  public getXpSettings(): XpSettings {
+    if (!this.data.xpSettings) {
+      this.data.xpSettings = { ...defaultXpSettings };
+      this.save();
+    }
+    return this.data.xpSettings;
   }
 
   public recordTransaction(txn: Omit<XpTransaction, 'id' | 'createdAt'>): XpTransaction {
@@ -332,6 +447,7 @@ class DatabaseService {
     return transaction;
   }
 
+  // --- MCQ & Questions ---
   public getMcqCategories(): string[] {
     return Array.from(new Set((this.data.mcqQuestions || []).map((q) => q.category)));
   }
@@ -347,6 +463,7 @@ class DatabaseService {
     return this.data.interviewQuestions;
   }
 
+  // --- Scheduled Interviews & Assessments ---
   public getScheduledInterviews(adminId?: string): ScheduledInterview[] {
     if (!this.data.scheduledInterviews) this.data.scheduledInterviews = [];
     if (adminId) return this.data.scheduledInterviews.filter((si) => si.adminId === adminId);
