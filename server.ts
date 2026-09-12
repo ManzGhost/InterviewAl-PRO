@@ -2,6 +2,7 @@ import express from 'express';
 import path from 'path';
 import { createServer as createViteServer } from 'vite';
 import dotenv from 'dotenv';
+import mongoose from 'mongoose';
 import { authRouter } from './server/routes/authRoutes';
 import { userRouter } from './server/routes/userRoutes';
 import { resumeRouter } from './server/routes/resumeRoutes';
@@ -23,6 +24,19 @@ async function startServer() {
   const app = express();
   const PORT = Number(process.env.PORT) || 3000;
 
+  // MongoDB Atlas Connection Setup
+  const mongoUri = process.env.MONGODB_URI;
+  if (mongoUri) {
+    try {
+      await mongoose.connect(mongoUri);
+      console.log(' MongoDB Atlas Connected Successfully!');
+    } catch (err) {
+      console.error(' MongoDB Connection Error:', err);
+    }
+  } else {
+    console.warn(' MONGODB_URI not found in environment variables.');
+  }
+
   // JSON and URL-encoded body parser
   app.use(express.json({ limit: '10mb' }));
   app.use(express.urlencoded({ extended: true, limit: '10mb' }));
@@ -42,6 +56,7 @@ async function startServer() {
       platform: 'InterviewAI',
       timestamp: new Date().toISOString(),
       geminiConfigured: Boolean(process.env.GEMINI_API_KEY),
+      dbConnected: mongoose.connection.readyState === 1,
     });
   });
 
