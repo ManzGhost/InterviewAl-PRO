@@ -291,6 +291,10 @@ class DatabaseService {
     return (this.data.resumes || []).filter((r) => r.userId === userId);
   }
 
+  public getResumeById(id: string): ResumeDocument | undefined {
+    return (this.data.resumes || []).find((r) => r.id === id);
+  }
+
   public saveResume(resume: ResumeDocument): ResumeDocument {
     if (!this.data.resumes) this.data.resumes = [];
     const idx = this.data.resumes.findIndex((r) => r.id === resume.id);
@@ -314,6 +318,10 @@ class DatabaseService {
   // --- Job Descriptions ---
   public getJobDescriptionsByUser(userId: string): JobDescriptionDocument[] {
     return (this.data.jobDescriptions || []).filter((j) => j.userId === userId);
+  }
+
+  public getJobDescriptionById(id: string): JobDescriptionDocument | undefined {
+    return (this.data.jobDescriptions || []).find((j) => j.id === id);
   }
 
   public saveJobDescription(job: JobDescriptionDocument): JobDescriptionDocument {
@@ -346,6 +354,19 @@ class DatabaseService {
     }
     this.save();
     return interview;
+  }
+
+  public createInterview(interview: InterviewSession): InterviewSession {
+    return this.saveInterview(interview);
+  }
+
+  public updateInterview(id: string, updates: Partial<InterviewSession>): InterviewSession | undefined {
+    if (!this.data.interviews) return undefined;
+    const idx = this.data.interviews.findIndex((i) => i.id === id);
+    if (idx === -1) return undefined;
+    this.data.interviews[idx] = { ...this.data.interviews[idx], ...updates };
+    this.save();
+    return this.data.interviews[idx];
   }
 
   // --- Performance & Achievements ---
@@ -468,6 +489,19 @@ class DatabaseService {
     if (!this.data.scheduledInterviews) this.data.scheduledInterviews = [];
     if (adminId) return this.data.scheduledInterviews.filter((si) => si.adminId === adminId);
     return this.data.scheduledInterviews;
+  }
+
+  public getScheduledInterviewById(id: string): ScheduledInterview | undefined {
+    return (this.data.scheduledInterviews || []).find((si) => si.id === id);
+  }
+
+  public updateScheduledInterview(id: string, updates: Partial<ScheduledInterview>): ScheduledInterview | undefined {
+    if (!this.data.scheduledInterviews) return undefined;
+    const idx = this.data.scheduledInterviews.findIndex((si) => si.id === id);
+    if (idx === -1) return undefined;
+    this.data.scheduledInterviews[idx] = { ...this.data.scheduledInterviews[idx], ...updates };
+    this.save();
+    return this.data.scheduledInterviews[idx];
   }
 
   public getSecureAssessments(): SecureAssessmentSession[] {
