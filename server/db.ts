@@ -12,7 +12,6 @@ import {
   McqQuestion,
   InterviewQuestion,
   ScheduledInterview,
-  ScheduledInterviewQuestion,
   NotificationItem,
   SecureAssessmentSession,
   ViolationRecord,
@@ -271,6 +270,7 @@ class DatabaseService {
     this.data.performances = (this.data.performances || []).filter((p) => p.userId !== userId);
     this.data.achievements = (this.data.achievements || []).filter((a) => a.userId !== userId);
     this.data.notifications = (this.data.notifications || []).filter((n) => n.userId !== userId);
+    this.data.secureAssessments = (this.data.secureAssessments || []).filter((s) => s.candidateId !== userId);
 
     this.save();
 
@@ -449,19 +449,30 @@ class DatabaseService {
   public deductXpWithTransaction(
     userId: string,
     amount: number,
-    action: XpAction,
+    action: any,
     description: string,
     metadata?: Record<string, any>
   ): { success: boolean; deducted: number; newXp: number; level: string; transaction?: XpTransaction } {
+    const user = this.getUserById(userId);
     const result = this.deductXp(userId, amount);
+    const oldBalance = user ? user.xpPoints : 0;
+    const newBalance = result.xp;
+
     const transaction = this.recordTransaction({
       userId,
+      userEmail: user?.email || '',
+      userName: user?.name || '',
+      userRole: user?.role || 'USER',
+      type: 'XP_DEDUCTED',
+      action: 'DEDUCTION',
       amount: -result.deducted,
-      type: 'DEBIT',
-      action,
+      balanceBefore: oldBalance,
+      balanceAfter: newBalance,
+      referenceId: metadata?.interviewId || metadata?.referenceId,
       description,
-      metadata,
+      status: 'COMPLETED',
     });
+
     return {
       success: result.success,
       deducted: result.deducted,
@@ -474,19 +485,30 @@ class DatabaseService {
   public awardXpWithTransaction(
     userId: string,
     amount: number,
-    action: XpAction,
+    action: any,
     description: string,
     metadata?: Record<string, any>
   ): { xp: number; level: string; leveledUp: boolean; transaction: XpTransaction } {
+    const user = this.getUserById(userId);
+    const oldBalance = user ? user.xpPoints : 0;
     const result = this.awardXp(userId, amount);
+    const newBalance = result.xp;
+
     const transaction = this.recordTransaction({
       userId,
+      userEmail: user?.email || '',
+      userName: user?.name || '',
+      userRole: user?.role || 'USER',
+      type: 'BONUS_EARNED',
+      action: 'ADDITION',
       amount,
-      type: 'CREDIT',
-      action,
+      balanceBefore: oldBalance,
+      balanceAfter: newBalance,
+      referenceId: metadata?.interviewId || metadata?.referenceId,
       description,
-      metadata,
+      status: 'COMPLETED',
     });
+
     return {
       ...result,
       transaction,
@@ -531,7 +553,7 @@ class DatabaseService {
     return this.data.interviewQuestions;
   }
 
-  // --- Scheduled Interviews & Assessments ---
+  // --- Scheduled Interviews ---
   public getScheduledInterviews(adminId?: string): ScheduledInterview[] {
     if (!this.data.scheduledInterviews) this.data.scheduledInterviews = [];
     if (adminId) return this.data.scheduledInterviews.filter((si) => si.adminId === adminId);
@@ -551,12 +573,107 @@ class DatabaseService {
     return this.data.scheduledInterviews[idx];
   }
 
+  // --- Secure Assessment / Proctoring Methods ---
   public getSecureAssessments(): SecureAssessmentSession[] {
     return this.data.secureAssessments || [];
   }
 
   public getActiveAssessmentByCandidate(candidateId: string): SecureAssessmentSession | null {
-    return (this.data.secureAssessments || []).find((s) => s.candidateId === candidateId && s.status === 'IN_PROGRESS') || null;
+    return (
+      (this.data.secureAssessments || []).find(
+        (s) => s.candidateId === candidateId && s.status === 'IN_PROGRESS'
+      ) || null
+    );
+  }
+
+  public getSecureAssessmentById(id: string): SecureAssessmentSession | undefined {
+    return (this.data.secureAssessments || []).find((s) => s.id === id);
+  }
+
+  public startSecureAssessment(params: {
+    candidateId: string;
+    candidateName: string;
+    candidateEmail: string;
+    interviewId?: string;
+    assessmentId?: string;
+    assessmentType: AssessmentType;
+    title?: string;
+    assessmentTitle?: string;
+    targetRole?: string;
+    durationMinutes?: number;
+  }): SecureAssessmentSession {
+    if (!this.data.secureAssessments) this.data.secureAssessments = [];
+
+    // Close any previous in-progress session for this candidate
+    this.data.secureAssessments.forEach((s) => {
+      if (s.candidateId === params.candidateId && s.status === 'IN_PROGRESS') {
+        s.status = 'COMPLETED';
+        s.endedAt = new Date().toISOString();
+        s.updatedAt = new Date().toISOString();
+      }
+    });
+
+    const now = new Date().toISOString();
+    const session: SecureAssessmentSession = {
+      id: `sec_ass_${Date.now()}_${Math.random().toString(36).substring(2, 7)}`,
+      candidateId: params.candidateId,
+      candidateName: params.candidateName,
+      candidateEmail: params.candidateEmail,
+      assessmentType: params.assessmentType,
+      assessmentId: params.assessmentId || params.interviewId || `ass_${Date.now()}`,
+      assessmentTitle: params.assessmentTitle || params.title || 'AI Assessment',
+      status: 'IN_PROGRESS',
+      startedAt: now,
+      durationMinutes: params.durationMinutes || 45,
+      violations: [],
+      createdAt: now,
+      updatedAt: now,
+    };
+
+    this.data.secureAssessments.unshift(session);
+    this.save();
+    return session;
+  }
+
+  public recordViolation(
+    sessionId: string,
+    violationType: ViolationType,
+    details?: string
+  ): { session: SecureAssessmentSession; terminated: boolean } | null {
+    const session = this.getSecureAssessmentById(sessionId);
+    if (!session || session.status !== 'IN_PROGRESS') return null;
+
+    if (!session.violations) session.violations = [];
+    const record: ViolationRecord = {
+      id: `viol_${Date.now()}_${Math.random().toString(36).substring(2, 6)}`,
+      type: violationType,
+      timestamp: new Date().toISOString(),
+      details: details || '',
+    };
+
+    session.violations.push(record);
+    session.updatedAt = new Date().toISOString();
+
+    let terminated = false;
+    if (session.violations.length >= 3) {
+      session.status = 'TERMINATED';
+      session.terminationReason = 'Exceeded maximum allowed security violations';
+      session.endedAt = new Date().toISOString();
+      terminated = true;
+    }
+
+    this.save();
+    return { session, terminated };
+  }
+
+  public endSecureAssessment(sessionId: string): SecureAssessmentSession | null {
+    const session = this.getSecureAssessmentById(sessionId);
+    if (!session) return null;
+    session.status = 'COMPLETED';
+    session.endedAt = new Date().toISOString();
+    session.updatedAt = new Date().toISOString();
+    this.save();
+    return session;
   }
 }
 
