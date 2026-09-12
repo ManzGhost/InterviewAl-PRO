@@ -446,6 +446,53 @@ class DatabaseService {
     return { xp: newXp, level: newLevel, deducted, success: true };
   }
 
+  public deductXpWithTransaction(
+    userId: string,
+    amount: number,
+    action: XpAction,
+    description: string,
+    metadata?: Record<string, any>
+  ): { success: boolean; deducted: number; newXp: number; level: string; transaction?: XpTransaction } {
+    const result = this.deductXp(userId, amount);
+    const transaction = this.recordTransaction({
+      userId,
+      amount: -result.deducted,
+      type: 'DEBIT',
+      action,
+      description,
+      metadata,
+    });
+    return {
+      success: result.success,
+      deducted: result.deducted,
+      newXp: result.xp,
+      level: result.level,
+      transaction,
+    };
+  }
+
+  public awardXpWithTransaction(
+    userId: string,
+    amount: number,
+    action: XpAction,
+    description: string,
+    metadata?: Record<string, any>
+  ): { xp: number; level: string; leveledUp: boolean; transaction: XpTransaction } {
+    const result = this.awardXp(userId, amount);
+    const transaction = this.recordTransaction({
+      userId,
+      amount,
+      type: 'CREDIT',
+      action,
+      description,
+      metadata,
+    });
+    return {
+      ...result,
+      transaction,
+    };
+  }
+
   public getXpSettings(): XpSettings {
     if (!this.data.xpSettings) {
       this.data.xpSettings = { ...defaultXpSettings };
