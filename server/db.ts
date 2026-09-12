@@ -102,7 +102,7 @@ class DatabaseService {
         const fileContent = fs.readFileSync(DB_FILE, 'utf-8');
         const parsed = JSON.parse(fileContent);
         return {
-          users: [], // Local disk par save nahi honge
+          users: [], // Local disk par save nahi honge, Atlas se direct aayenge
           resumes: parsed.resumes || [],
           jobDescriptions: parsed.jobDescriptions || [],
           interviews: parsed.interviews || [],
@@ -314,7 +314,7 @@ class DatabaseService {
     return job;
   }
 
-  // --- Interviews ---
+  // --- Interviews & History Management ---
   public getInterviewsByUser(userId: string): InterviewSession[] {
     return (this.data.interviews || []).filter((i) => i.userId === userId);
   }
@@ -350,6 +350,58 @@ class DatabaseService {
     this.data.interviews[idx] = { ...this.data.interviews[idx], ...updates };
     this.save();
     return this.data.interviews[idx];
+  }
+
+  // Clear Interview History (Controller dono method names ko call kar sakta hai)
+  public clearInterviewHistory(userId: string): boolean {
+    if (!this.data.interviews) this.data.interviews = [];
+    this.data.interviews = this.data.interviews.filter((i) => i.userId !== userId);
+
+    if (this.data.secureAssessments) {
+      this.data.secureAssessments = this.data.secureAssessments.filter(
+        (s) => s.candidateId !== userId
+      );
+    }
+    this.save();
+    return true;
+  }
+
+  public clearInterviewsByUser(userId: string): boolean {
+    return this.clearInterviewHistory(userId);
+  }
+
+  public deleteInterview(id: string, userId?: string): boolean {
+    if (!this.data.interviews) return false;
+    const prevCount = this.data.interviews.length;
+    this.data.interviews = this.data.interviews.filter((i) => {
+      if (userId) return !(i.id === id && i.userId === userId);
+      return i.id !== id;
+    });
+    const removed = this.data.interviews.length < prevCount;
+    if (removed) this.save();
+    return removed;
+  }
+
+  // Release any stuck or pending sessions to eliminate 409 Conflict
+  public clearActiveCandidateSessions(candidateId: string): void {
+    if (!this.data.secureAssessments) this.data.secureAssessments = [];
+    this.data.secureAssessments.forEach((s) => {
+      if (s.candidateId === candidateId && s.status === 'IN_PROGRESS') {
+        s.status = 'COMPLETED';
+        s.endedAt = new Date().toISOString();
+        s.updatedAt = new Date().toISOString();
+      }
+    });
+
+    if (!this.data.interviews) this.data.interviews = [];
+    this.data.interviews.forEach((i) => {
+      if (i.userId === candidateId && i.status === 'IN_PROGRESS') {
+        i.status = 'COMPLETED';
+        i.completedAt = new Date().toISOString();
+      }
+    });
+
+    this.save();
   }
 
   // --- Performance & Achievements ---
@@ -539,6 +591,11 @@ class DatabaseService {
     return this.data.scheduledInterviews;
   }
 
+  public getScheduledInterviewsByCandidate(candidateId: string): ScheduledInterview[] {
+    if (!this.data.scheduledInterviews) this.data.scheduledInterviews = [];
+    return this.data.scheduledInterviews.filter((si) => si.candidateId === candidateId);
+  }
+
   public getScheduledInterviewById(id: string): ScheduledInterview | undefined {
     return (this.data.scheduledInterviews || []).find((si) => si.id === id);
   }
@@ -589,6 +646,7 @@ class DatabaseService {
   }): SecureAssessmentSession {
     if (!this.data.secureAssessments) this.data.secureAssessments = [];
 
+    // Purane running sessions ko safely close karna
     this.data.secureAssessments.forEach((s) => {
       if (s.candidateId === params.candidateId && s.status === 'IN_PROGRESS') {
         s.status = 'COMPLETED';
