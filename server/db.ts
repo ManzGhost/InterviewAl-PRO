@@ -77,7 +77,7 @@ class DatabaseService {
     this.syncFromMongoAtlas();
   }
 
-  // MongoDB Atlas se live users ko memory me load karna
+  // MongoDB Atlas se real users ko memory me sync karna
   public async syncFromMongoAtlas(): Promise<void> {
     try {
       const atlasUsers = await UserModel.find({}).lean();
@@ -102,7 +102,7 @@ class DatabaseService {
         const fileContent = fs.readFileSync(DB_FILE, 'utf-8');
         const parsed = JSON.parse(fileContent);
         return {
-          users: [], // File me kabhi save nahi honge, direct MongoDB Atlas se load honge
+          users: [], // Local disk par save nahi honge
           resumes: parsed.resumes || [],
           jobDescriptions: parsed.jobDescriptions || [],
           interviews: parsed.interviews || [],
@@ -144,7 +144,7 @@ class DatabaseService {
       if (!fs.existsSync(DATA_DIR)) {
         fs.mkdirSync(DATA_DIR, { recursive: true });
       }
-      // Users array ko hamesha empty save karein taaki local disk par koi data leak na ho
+      // Non-user sessions save honge, users hamesha khali rahega
       const dataToSave = { ...this.data, users: [] };
       fs.writeFileSync(DB_FILE, JSON.stringify(dataToSave, null, 2), 'utf-8');
     } catch (err) {
@@ -219,7 +219,7 @@ class DatabaseService {
     return populated;
   }
 
-  // --- CRUD: Only Save Directly to MongoDB Atlas ---
+  // --- CRUD: Strictly via MongoDB Atlas ---
   public createUser(user: User): User {
     this.data.users.push(user);
 
@@ -253,7 +253,7 @@ class DatabaseService {
     this.data.performances = (this.data.performances || []).filter((p) => p.userId !== userId);
     this.data.achievements = (this.data.achievements || []).filter((a) => a.userId !== userId);
     this.data.notifications = (this.data.notifications || []).filter((n) => n.userId !== userId);
-    this.data.secureAssessments = (this.data.secureAssessments || []).filter((s) => s.candidateId !== userId);
+    this.data.secureAssessments = (this.data.secureAssessments || []).filter((s) => (s as any).candidateId !== userId);
 
     this.save();
 
@@ -569,6 +569,12 @@ class DatabaseService {
     return (this.data.secureAssessments || []).find((s) => s.id === id);
   }
 
+  public getSecureAssessmentByInterviewId(interviewId: string): SecureAssessmentSession | undefined {
+    return (this.data.secureAssessments || []).find(
+      (s) => s.assessmentId === interviewId || (s as any).interviewId === interviewId
+    );
+  }
+
   public startSecureAssessment(params: {
     candidateId: string;
     candidateName: string;
@@ -644,14 +650,23 @@ class DatabaseService {
     return { session, terminated };
   }
 
-  public endSecureAssessment(sessionId: string): SecureAssessmentSession | null {
-    const session = this.getSecureAssessmentById(sessionId);
+  public completeSecureAssessment(assessmentIdentifier: string): SecureAssessmentSession | null {
+    const session = (this.data.secureAssessments || []).find(
+      (s) =>
+        s.id === assessmentIdentifier ||
+        s.assessmentId === assessmentIdentifier ||
+        (s as any).interviewId === assessmentIdentifier
+    );
     if (!session) return null;
     session.status = 'COMPLETED';
     session.endedAt = new Date().toISOString();
     session.updatedAt = new Date().toISOString();
     this.save();
     return session;
+  }
+
+  public endSecureAssessment(sessionId: string): SecureAssessmentSession | null {
+    return this.completeSecureAssessment(sessionId);
   }
 }
 
