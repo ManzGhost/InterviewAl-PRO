@@ -1,6 +1,5 @@
 import React from 'react';
 import {
-  Brain,
   Volume2,
   VolumeX,
   Sparkles,
@@ -31,8 +30,10 @@ export const InterviewerAvatarFeed: React.FC<InterviewerAvatarFeedProps> = ({
   interviewerName,
   questionCategory,
 }) => {
+  const waveHeights = [40, 70, 90, 60, 100, 80, 50, 85, 65, 35];
+
   return (
-    <div className="relative rounded-3xl overflow-hidden border border-zinc-200/80 dark:border-zinc-800 bg-zinc-950 text-white shadow-xl flex flex-col justify-between aspect-video w-full">
+    <div className="relative rounded-3xl overflow-hidden border border-zinc-200/80 dark:border-zinc-800 bg-zinc-950 text-white shadow-xl flex flex-col justify-between aspect-video w-full select-none">
       {/* Background Visual Pattern */}
       <div className="absolute inset-0 bg-radial from-blue-900/30 via-zinc-950 to-zinc-950 pointer-events-none" />
       <div className="absolute inset-0 opacity-10 bg-[linear-gradient(to_right,#3b82f6_1px,transparent_1px),linear-gradient(to_bottom,#3b82f6_1px,transparent_1px)] bg-[size:24px_24px] pointer-events-none" />
@@ -46,14 +47,14 @@ export const InterviewerAvatarFeed: React.FC<InterviewerAvatarFeedProps> = ({
           </span>
           <span className="text-zinc-500">•</span>
           <span className="text-[11px] font-medium text-zinc-300">
-            {companyName} Bar Raiser
+            {interviewerName || `${companyName} Bar Raiser`}
           </span>
         </div>
 
         <button
           type="button"
           onClick={onToggleSpeech}
-          className={`flex items-center gap-1.5 px-3 py-1.5 rounded-xl text-xs font-semibold border transition-all cursor-pointer ${
+          className={`flex items-center gap-1.5 px-3 py-1.5 rounded-xl text-xs font-semibold border transition-all cursor-pointer active:scale-95 ${
             isSpeaking
               ? 'bg-blue-600 border-blue-500 text-white shadow-md shadow-blue-500/25 animate-pulse'
               : 'bg-zinc-900/80 hover:bg-zinc-800 border-white/10 text-zinc-300'
@@ -93,13 +94,13 @@ export const InterviewerAvatarFeed: React.FC<InterviewerAvatarFeedProps> = ({
             Target: {jobRole}
           </h3>
           <p className="text-[11px] text-zinc-400">
-            Assessing: {category} • Level: {difficulty}
+            Assessing: {questionCategory || category} • Level: {difficulty}
           </p>
         </div>
 
         {/* Audio Visualizer Wave */}
         <div className="flex items-center gap-1 h-5 pt-1">
-          {[40, 70, 90, 60, 100, 75, 45, 85, 55, 30].map((h, idx) => (
+          {waveHeights.map((h, idx) => (
             <div
               key={idx}
               className={`w-1 rounded-full transition-all duration-150 ${
@@ -108,7 +109,7 @@ export const InterviewerAvatarFeed: React.FC<InterviewerAvatarFeedProps> = ({
                   : 'bg-zinc-700'
               }`}
               style={{
-                height: isSpeaking ? `${Math.max(15, (h * Math.sin(idx + 1)) + 20)}%` : '20%',
+                height: isSpeaking ? `${h}%` : '20%',
               }}
             />
           ))}
