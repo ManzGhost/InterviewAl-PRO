@@ -1,0 +1,27 @@
+server:
+  port: 8080
+
+spring:
+  application:
+    name: InterviewAI
+  data:
+    mongodb:
+      uri: ${MONGODB_URI:mongodb://localhost:27017/interviewai}
+  servlet:
+    multipart:
+      max-file-size: 10MB
+      max-request-size: 10MB
+
+interviewai:
+  jwt:
+    secret: ${JWT_SECRET:interviewai_super_secret_jwt_key_2025_prod_secure_random}
+    expiration: ${JWT_EXPIRATION:86400000}
+    refresh-expiration: ${REFRESH_TOKEN_EXPIRATION:604800000}
+  gemini:
+    api-key: ${GEMINI_API_KEY:}
+
+springdoc:
+  api-docs:
+    path: /api-docs
+  swagger-ui:
+    path: /swagger-ui.html

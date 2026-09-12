@@ -1,0 +1,7 @@
+{
+  "name": "InterviewAI – AI-Powered Interview Preparation Platform",
+  "description": "AI-powered smart interview preparation & career intelligence platform featuring real-time mock interviews, resume ATS analysis, job description matching, and personalized roadmaps.",
+  "requestFramePermissions": ["microphone", "camera"],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}
+
