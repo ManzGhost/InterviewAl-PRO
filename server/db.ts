@@ -472,6 +472,7 @@ class DatabaseService {
     return { xp: newXp, level: newLevel, deducted, success: true };
   }
 
+  // Supports both single object argument and multiple positional arguments
   public deductXpWithTransaction(
     paramOrUserId: any,
     amountArg?: number,
@@ -498,7 +499,7 @@ class DatabaseService {
 
     const user = this.getUserById(userId);
     const result = this.deductXp(userId, amount);
-    const oldBalance = user ? user.xpPoints : 0;
+    const oldBalance = user ? user.xpPoints || 0 : 0;
     const newBalance = result.xp;
 
     const transaction = this.recordTransaction({
@@ -522,6 +523,57 @@ class DatabaseService {
       newXp: result.xp,
       balanceAfter: newBalance,
       level: result.level,
+      transaction,
+    };
+  }
+
+  // Award XP with transaction (supports both object parameter and positional arguments)
+  public awardXpWithTransaction(
+    paramOrUserId: any,
+    amountArg?: number,
+    actionArg?: any,
+    descriptionArg?: string,
+    metadataArg?: Record<string, any>
+  ): { xp: number; level: string; leveledUp: boolean; transaction: XpTransaction } {
+    let userId: string;
+    let amount: number;
+    let description: string;
+    let referenceId: string | undefined;
+
+    if (typeof paramOrUserId === 'object') {
+      userId = paramOrUserId.userId;
+      amount = paramOrUserId.points || paramOrUserId.amount || 0;
+      description = paramOrUserId.description || 'XP Awarded';
+      referenceId = paramOrUserId.referenceId;
+    } else {
+      userId = paramOrUserId;
+      amount = amountArg || 0;
+      description = descriptionArg || 'XP Bonus';
+      referenceId = metadataArg?.referenceId || metadataArg?.interviewId;
+    }
+
+    const user = this.getUserById(userId);
+    const oldBalance = user ? user.xpPoints || 0 : 0;
+    const result = this.awardXp(userId, amount);
+    const newBalance = result.xp;
+
+    const transaction = this.recordTransaction({
+      userId: String(userId),
+      userEmail: user?.email || '',
+      userName: user?.name || '',
+      userRole: user?.role || 'USER',
+      type: 'BONUS_EARNED',
+      action: 'ADDITION',
+      amount,
+      balanceBefore: oldBalance,
+      balanceAfter: newBalance,
+      referenceId,
+      description,
+      status: 'COMPLETED',
+    });
+
+    return {
+      ...result,
       transaction,
     };
   }
