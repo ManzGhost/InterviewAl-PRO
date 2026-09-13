@@ -77,7 +77,6 @@ class DatabaseService {
     this.syncFromMongoAtlas();
   }
 
-  // MongoDB Atlas se real users ko memory me sync karna
   public async syncFromMongoAtlas(): Promise<void> {
     try {
       const atlasUsers = await UserModel.find({}).lean();
@@ -102,7 +101,7 @@ class DatabaseService {
         const fileContent = fs.readFileSync(DB_FILE, 'utf-8');
         const parsed = JSON.parse(fileContent);
         return {
-          users: [], // Local disk par save nahi honge, Atlas se direct aayenge
+          users: [],
           resumes: parsed.resumes || [],
           jobDescriptions: parsed.jobDescriptions || [],
           interviews: parsed.interviews || [],
@@ -144,7 +143,6 @@ class DatabaseService {
       if (!fs.existsSync(DATA_DIR)) {
         fs.mkdirSync(DATA_DIR, { recursive: true });
       }
-      // Non-user sessions save honge, users hamesha khali rahega
       const dataToSave = { ...this.data, users: [] };
       fs.writeFileSync(DB_FILE, JSON.stringify(dataToSave, null, 2), 'utf-8');
     } catch (err) {
@@ -219,14 +217,11 @@ class DatabaseService {
     return populated;
   }
 
-  // --- CRUD: Strictly via MongoDB Atlas ---
   public createUser(user: User): User {
     this.data.users.push(user);
-
     UserModel.create(user)
       .then(() => console.log(`[MongoDB Atlas] User successfully persisted: ${user.email}`))
       .catch((err: any) => console.error(`[MongoDB Atlas] Error persisting user:`, err?.message));
-
     return this.populateAssignedAdmin(user);
   }
 
@@ -234,11 +229,9 @@ class DatabaseService {
     const idx = this.data.users.findIndex((u) => u.id === id);
     if (idx === -1) return undefined;
     this.data.users[idx] = { ...this.data.users[idx], ...updates, updatedAt: new Date().toISOString() };
-
     UserModel.findOneAndUpdate({ id }, updates).catch((err: any) => {
       console.error(`[MongoDB Atlas] Error updating user:`, err?.message);
     });
-
     return this.data.users[idx];
   }
 
@@ -256,7 +249,6 @@ class DatabaseService {
     this.data.secureAssessments = (this.data.secureAssessments || []).filter((s) => (s as any).candidateId !== userId);
 
     this.save();
-
     UserModel.deleteOne({ id: userId }).catch((err: any) => {
       console.error(`[MongoDB Atlas] Error deleting user:`, err?.message);
     });
@@ -280,7 +272,7 @@ class DatabaseService {
 
   public saveResume(resume: ResumeDocument): ResumeDocument {
     if (!this.data.resumes) this.data.resumes = [];
-    const idx = this.data.resetResumesIdx !== undefined ? this.data.resetResumesIdx : this.data.resumes.findIndex((r) => r.id === resume.id);
+    const idx = this.data.resumes.findIndex((r) => r.id === resume.id);
     if (idx >= 0) {
       this.data.resumes[idx] = resume;
     } else {
@@ -352,15 +344,11 @@ class DatabaseService {
     return this.data.interviews[idx];
   }
 
-  // Clear Interview History
   public clearInterviewHistory(userId: string): boolean {
     if (!this.data.interviews) this.data.interviews = [];
     this.data.interviews = this.data.interviews.filter((i) => i.userId !== userId);
-
     if (this.data.secureAssessments) {
-      this.data.secureAssessments = this.data.secureAssessments.filter(
-        (s) => s.candidateId !== userId
-      );
+      this.data.secureAssessments = this.data.secureAssessments.filter((s) => s.candidateId !== userId);
     }
     this.save();
     return true;
@@ -382,7 +370,6 @@ class DatabaseService {
     return removed;
   }
 
-  // Release any stuck or pending sessions to eliminate 409 Conflict
   public clearActiveCandidateSessions(candidateId: string): void {
     if (!this.data.secureAssessments) this.data.secureAssessments = [];
     this.data.secureAssessments.forEach((s) => {
@@ -400,7 +387,6 @@ class DatabaseService {
         i.completedAt = new Date().toISOString();
       }
     });
-
     this.save();
   }
 
@@ -451,6 +437,10 @@ class DatabaseService {
   }
 
   // --- XP Settings & Transactions ---
+  public getXpSettings(): XpSettings {
+    return this.data.xpSettings;
+  }
+
   public awardXp(userId: string, points: number): { xp: number; level: string; leveledUp: boolean } {
     const user = this.getUserById(userId);
     if (!user) return { xp: 0, level: 'Beginner', leveledUp: false };
@@ -481,13 +471,31 @@ class DatabaseService {
     return { xp: newXp, level: newLevel, deducted, success: true };
   }
 
+  // Supports both single object argument and multiple positional arguments
   public deductXpWithTransaction(
-    userId: string,
-    amount: number,
-    action: any,
-    description: string,
-    metadata?: Record<string, any>
-  ): { success: boolean; deducted: number; newXp: number; level: string; transaction?: XpTransaction } {
+    paramOrUserId: any,
+    amountArg?: number,
+    actionArg?: any,
+    descriptionArg?: string,
+    metadataArg?: Record<string, any>
+  ): { success: boolean; deducted: number; newXp: number; level: string; balanceAfter: number; transaction?: XpTransaction } {
+    let userId: string;
+    let amount: number;
+    let description: string;
+    let referenceId: string | undefined;
+
+    if (typeof paramOrUserId === 'object') {
+      userId = paramOrUserId.userId;
+      amount = paramOrUserId.amount || 0;
+      description = paramOrUserId.description || 'Assessment Deduction';
+      referenceId = paramOrUserId.referenceId;
+    } else {
+      userId = paramOrUserId;
+      amount = amountArg || 0;
+      description = descriptionArg || 'XP Deduction';
+      referenceId = metadataArg?.interviewId || metadataArg?.referenceId;
+    }
+
     const user = this.getUserById(userId);
     const result = this.deductXp(userId, amount);
     const oldBalance = user ? user.xpPoints : 0;
@@ -503,7 +511,7 @@ class DatabaseService {
       amount: -result.deducted,
       balanceBefore: oldBalance,
       balanceAfter: newBalance,
-      referenceId: metadata?.interviewId || metadata?.referenceId,
+      referenceId,
       description,
       status: 'COMPLETED',
     });
@@ -512,46 +520,39 @@ class DatabaseService {
       success: result.success,
       deducted: result.deducted,
       newXp: result.xp,
+      balanceAfter: newBalance,
       level: result.level,
       transaction,
     };
   }
 
-  public awardXpWithTransaction(
-    userId: string,
-    amount: number,
-    action: any,
-    description: string,
-    metadata?: Record<string, any>
-  ): { xp: number; level: string; leveledUp: boolean; transaction: XpTransaction } {
-    const user = this.getUserById(userId);
-    const oldBalance = user ? user.xpPoints : 0;
-    const result = this.awardXp(userId, amount);
-    const newBalance = result.xp;
+  public refundXpWithTransaction(params: {
+    userId: string;
+    amount: number;
+    type?: string;
+    referenceId?: string;
+    description?: string;
+    reason?: string;
+    originalTransactionId?: string;
+  }): XpTransaction {
+    const user = this.getUserById(params.userId);
+    const oldBalance = user?.xpPoints || 0;
+    const awardResult = this.awardXp(params.userId, params.amount);
 
-    const transaction = this.recordTransaction({
-      userId,
+    return this.recordTransaction({
+      userId: params.userId,
       userEmail: user?.email || '',
       userName: user?.name || '',
       userRole: user?.role || 'USER',
       type: 'BONUS_EARNED',
       action: 'ADDITION',
-      amount,
+      amount: params.amount,
       balanceBefore: oldBalance,
-      balanceAfter: newBalance,
-      referenceId: metadata?.interviewId || metadata?.referenceId,
-      description,
+      balanceAfter: awardResult.xp,
+      referenceId: params.referenceId,
+      description: params.description || 'System Refund',
       status: 'COMPLETED',
     });
-
-    return {
-      ...result,
-      transaction,
-    };
-  }
-
-  public getXpSettings(): XpSettings {
-    return this.data.xpSettings;
   }
 
   public recordTransaction(txn: Omit<XpTransaction, 'id' | 'createdAt'>): XpTransaction {
@@ -566,6 +567,15 @@ class DatabaseService {
     this.data.xpTransactions.unshift(transaction);
     this.save();
     return transaction;
+  }
+
+  public getXpTransactionByReference(userId: string, referenceId: string, action?: string): XpTransaction | undefined {
+    return (this.data.xpTransactions || []).find((t) => {
+      const matchUser = t.userId === userId;
+      const matchRef = t.referenceId === referenceId;
+      const matchAction = action ? t.action === action : true;
+      return matchUser && matchRef && matchAction;
+    });
   }
 
   // --- MCQ & Questions ---
@@ -623,7 +633,7 @@ class DatabaseService {
   }
 
   public getSecureAssessmentById(id: string): SecureAssessmentSession | undefined {
-    return (this.data.secureAssessments || []).find((s) => s.id === id);
+    return (this.data.secureAssessments || []).find((s) => s.id === id || s.assessmentId === id);
   }
 
   public getSecureAssessmentByInterviewId(interviewId: string): SecureAssessmentSession | undefined {
@@ -643,17 +653,29 @@ class DatabaseService {
     assessmentTitle?: string;
     targetRole?: string;
     durationMinutes?: number;
-  }): SecureAssessmentSession {
+    initialProgress?: any;
+  }): { session?: SecureAssessmentSession; restored?: boolean; error?: string } {
     if (!this.data.secureAssessments) this.data.secureAssessments = [];
 
-    // Purane running sessions ko safely close karna
-    this.data.secureAssessments.forEach((s) => {
-      if (s.candidateId === params.candidateId && s.status === 'IN_PROGRESS') {
-        s.status = 'COMPLETED';
-        s.endedAt = new Date().toISOString();
-        s.updatedAt = new Date().toISOString();
+    const effectiveAssId = params.assessmentId || params.interviewId || `ass_${Date.now()}`;
+
+    // Existing session restore check
+    const existing = this.data.secureAssessments.find(
+      (s) => (s.assessmentId === effectiveAssId || s.id === effectiveAssId) && s.candidateId === params.candidateId
+    );
+
+    if (existing) {
+      if (existing.status === 'TERMINATED') {
+        return {
+          session: existing,
+          error: 'Assessment was terminated due to security policy violations.',
+        };
       }
-    });
+      return {
+        session: existing,
+        restored: true,
+      };
+    }
 
     const now = new Date().toISOString();
     const session: SecureAssessmentSession = {
@@ -662,7 +684,7 @@ class DatabaseService {
       candidateName: params.candidateName,
       candidateEmail: params.candidateEmail,
       assessmentType: params.assessmentType,
-      assessmentId: params.assessmentId || params.interviewId || `ass_${Date.now()}`,
+      assessmentId: effectiveAssId,
       assessmentTitle: params.assessmentTitle || params.title || 'AI Assessment',
       status: 'IN_PROGRESS',
       startedAt: now,
@@ -670,58 +692,53 @@ class DatabaseService {
       violations: [],
       createdAt: now,
       updatedAt: now,
-    };
+      ...(params.initialProgress ? { progress: params.initialProgress } : {}),
+    } as any;
 
     this.data.secureAssessments.unshift(session);
+    this.save();
+    return { session, restored: false };
+  }
+
+  public updateSecureAssessmentProgress(assessmentId: string, progress: any): SecureAssessmentSession | undefined {
+    const session = this.getSecureAssessmentById(assessmentId);
+    if (!session) return undefined;
+    (session as any).progress = progress;
+    session.updatedAt = new Date().toISOString();
     this.save();
     return session;
   }
 
-  // --- Aliases for Assessment Start Endpoints ---
-  public createSecureAssessment(params: any): SecureAssessmentSession {
-    return this.startSecureAssessment(params);
-  }
+  public terminateSecureAssessment(params: {
+    assessmentIdOrId: string;
+    violationType: ViolationType;
+    details?: string;
+    finalProgress?: any;
+  }): SecureAssessmentSession | undefined {
+    const session = this.getSecureAssessmentById(params.assessmentIdOrId);
+    if (!session) return undefined;
 
-  public createAssessment(params: any): SecureAssessmentSession {
-    return this.startSecureAssessment(params);
-  }
-
-  public getAssessmentById(id: string): SecureAssessmentSession | undefined {
-    return this.getSecureAssessmentById(id);
-  }
-
-  public recordViolation(
-    sessionId: string,
-    violationType: ViolationType,
-    details?: string
-  ): { session: SecureAssessmentSession; terminated: boolean } | null {
-    const session = this.getSecureAssessmentById(sessionId);
-    if (!session || session.status !== 'IN_PROGRESS') return null;
-
-    if (!session.violations) session.violations = [];
-    const record: ViolationRecord = {
-      id: `viol_${Date.now()}_${Math.random().toString(36).substring(2, 6)}`,
-      type: violationType,
-      timestamp: new Date().toISOString(),
-      details: details || '',
-    };
-
-    session.violations.push(record);
+    session.status = 'TERMINATED';
+    session.terminationReason = params.details || 'Unauthorized activity detected.';
+    session.endedAt = new Date().toISOString();
     session.updatedAt = new Date().toISOString();
-
-    let terminated = false;
-    if (session.violations.length >= 3) {
-      session.status = 'TERMINATED';
-      session.terminationReason = 'Exceeded maximum allowed security violations';
-      session.endedAt = new Date().toISOString();
-      terminated = true;
+    if (params.finalProgress) {
+      (session as any).progress = params.finalProgress;
     }
 
+    if (!session.violations) session.violations = [];
+    session.violations.push({
+      id: `viol_${Date.now()}_${Math.random().toString(36).substring(2, 6)}`,
+      type: params.violationType,
+      timestamp: new Date().toISOString(),
+      details: params.details || '',
+    });
+
     this.save();
-    return { session, terminated };
+    return session;
   }
 
-  public completeSecureAssessment(assessmentIdentifier: string): SecureAssessmentSession | null {
+  public completeSecureAssessment(assessmentIdentifier: string, finalProgress?: any): SecureAssessmentSession | null {
     const session = (this.data.secureAssessments || []).find(
       (s) =>
         s.id === assessmentIdentifier ||
@@ -732,12 +749,27 @@ class DatabaseService {
     session.status = 'COMPLETED';
     session.endedAt = new Date().toISOString();
     session.updatedAt = new Date().toISOString();
+    if (finalProgress) {
+      (session as any).progress = finalProgress;
+    }
     this.save();
     return session;
   }
 
   public endSecureAssessment(sessionId: string): SecureAssessmentSession | null {
     return this.completeSecureAssessment(sessionId);
+  }
+
+  public createSecureAssessment(params: any): any {
+    return this.startSecureAssessment(params);
+  }
+
+  public createAssessment(params: any): any {
+    return this.startSecureAssessment(params);
+  }
+
+  public getAssessmentById(id: string): SecureAssessmentSession | undefined {
+    return this.getSecureAssessmentById(id);
   }
 }
 
