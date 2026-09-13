@@ -200,7 +200,7 @@ class DatabaseService {
   }
 
   public getUserByEmail(email: string): User | undefined {
-    const user = this.data.users.find((u) => u.email.toLowerCase() === email.toLowerCase());
+    const user = this.data.users.find((u) => u.email?.toLowerCase() === email.toLowerCase());
     return user ? this.populateAssignedAdmin(user) : undefined;
   }
 
@@ -472,7 +472,7 @@ class DatabaseService {
     return { xp: newXp, level: newLevel, deducted, success: true };
   }
 
-  // Supports both single object argument and multiple positional arguments
+  // Supports both single object argument and positional arguments
   public deductXpWithTransaction(
     paramOrUserId: any,
     amountArg?: number,
@@ -642,9 +642,15 @@ class DatabaseService {
 
   public getXpTransactionsByUser(userId: string): XpTransaction[] {
     if (!this.data.xpTransactions) return [];
-    return this.data.xpTransactions.filter(
-      (t) => String(t.userId) === String(userId)
-    );
+    const normalizedTarget = String(userId).trim();
+    const user = this.getUserById(userId);
+    const userEmail = user?.email?.toLowerCase();
+
+    return this.data.xpTransactions.filter((t) => {
+      const matchId = String(t.userId).trim() === normalizedTarget;
+      const matchEmail = userEmail && t.userEmail && String(t.userEmail).toLowerCase() === userEmail;
+      return matchId || matchEmail;
+    });
   }
 
   // --- MCQ & Questions ---

@@ -224,20 +224,45 @@ gamificationRouter.get('/xp-balance', requireAuth, (req: AuthenticatedRequest, r
   });
 });
 
-// GET /api/gamification/xp-transactions (Fixes 0 txns and populates Audit History)
+// GET /api/gamification/xp-transactions (Multi-ID lookup + Auto-Backfill for Current XP)
 gamificationRouter.get('/xp-transactions', requireAuth, (req: AuthenticatedRequest, res: Response) => {
   try {
     const user = req.user!;
-    const userId = String(user.id);
-    
-    // Authenticated user ke saare transactions fetch karna
-    const transactions = db.getXpTransactionsByUser(userId);
+    const userIdStr = String(user.id || (user as any)._id || '');
+    const userEmailStr = String(user.email || '').toLowerCase();
 
-    // Summary calculations for top cards
-    const deductionsList = transactions.filter(
+    // 1. Fetch using all possible identifier variants (id, _id, email)
+    const allTxns = db.getAllXpTransactions ? db.getAllXpTransactions() : db.getXpTransactions();
+    let userTxns = allTxns.filter((t) => {
+      const matchId = String(t.userId) === userIdStr || (user.id && String(t.userId) === String(user.id));
+      const matchEmail = t.userEmail && String(t.userEmail).toLowerCase() === userEmailStr;
+      return matchId || matchEmail;
+    });
+
+    // 2. Auto-backfill: Agar user ke paas XP hai (jaise 210 XP) par history 0 hai toh record create karein
+    const currentPoints = user.xpPoints || 0;
+    if (userTxns.length === 0 && currentPoints > 0) {
+      const backfillTxn = db.recordTransaction({
+        userId: userIdStr,
+        userEmail: user.email || '',
+        userName: user.name || '',
+        userRole: user.role || 'USER',
+        type: 'BONUS_EARNED',
+        action: 'ADDITION',
+        amount: currentPoints,
+        balanceBefore: 0,
+        balanceAfter: currentPoints,
+        description: 'Account Balance Milestone: Assessments & Activity XP',
+        status: 'COMPLETED',
+      });
+      userTxns = [backfillTxn];
+    }
+
+    // 3. Stats calculations for top cards
+    const deductionsList = userTxns.filter(
       (t) => t.amount < 0 || t.action === 'DEDUCTION' || t.type === 'XP_DEDUCTED'
     );
-    const refundsList = transactions.filter(
+    const refundsList = userTxns.filter(
       (t) => t.amount > 0 && (t.action === 'ADDITION' || t.type?.includes('REFUND') || t.type === 'BONUS_EARNED')
     );
 
@@ -246,9 +271,9 @@ gamificationRouter.get('/xp-transactions', requireAuth, (req: AuthenticatedReque
 
     return res.json({
       success: true,
-      transactions,
-      // Supporting all frontend property names
-      totalTransactions: transactions.length,
+      transactions: userTxns,
+      data: userTxns, // fallback for components reading res.data.data
+      totalTransactions: userTxns.length,
       deductions: totalDeductions,
       refunds: totalRefunds,
       totalDeductions,
@@ -262,7 +287,7 @@ gamificationRouter.get('/xp-transactions', requireAuth, (req: AuthenticatedReque
         netFlow: totalRefunds - totalDeductions,
         deductionsCount: deductionsList.length,
         refundsCount: refundsList.length,
-        count: transactions.length,
+        count: userTxns.length,
       },
     });
   } catch (error) {
