@@ -37,16 +37,27 @@ export const AssessmentSecurityProvider: React.FC<{ children: React.ReactNode }>
   const isTerminatingRef = useRef(false);
   const progressGetterRef = useRef<(() => any) | null>(null);
   const expectedPathRef = useRef<string | null>(null);
+  const hasEnteredFullscreenRef = useRef(false);
 
-  // Enter Fullscreen helper
+  // Cross-browser safe enter fullscreen helper
   const enterFullscreen = useCallback(async () => {
     try {
-      if (!document.fullscreenElement && document.documentElement.requestFullscreen) {
-        await document.documentElement.requestFullscreen();
-        setIsFullscreen(true);
+      if (!document.fullscreenElement) {
+        const docEl = document.documentElement as any;
+        const requestFs =
+          docEl.requestFullscreen ||
+          docEl.webkitRequestFullscreen ||
+          docEl.mozRequestFullScreen ||
+          docEl.msRequestFullscreen;
+
+        if (requestFs) {
+          await requestFs.call(docEl);
+          setIsFullscreen(true);
+          hasEnteredFullscreenRef.current = true;
+        }
       }
     } catch (err) {
-      console.warn('Fullscreen request blocked or not permitted:', err);
+      console.warn('[Assessment Security] Fullscreen requires direct user gesture or was blocked:', err);
     }
   }, []);
 
@@ -62,12 +73,19 @@ export const AssessmentSecurityProvider: React.FC<{ children: React.ReactNode }>
       // Exit fullscreen if active
       if (document.fullscreenElement) {
         try {
-          await document.exitFullscreen();
+          const doc = document as any;
+          const exitFs =
+            doc.exitFullscreen ||
+            doc.webkitExitFullscreen ||
+            doc.mozCancelFullScreen ||
+            doc.msExitFullscreen;
+          if (exitFs) await exitFs.call(doc);
         } catch (e) {}
       }
 
       setIsSecureMode(false);
       setIsFullscreen(false);
+      hasEnteredFullscreenRef.current = false;
 
       if (currentId) {
         try {
@@ -98,7 +116,13 @@ export const AssessmentSecurityProvider: React.FC<{ children: React.ReactNode }>
 
       if (document.fullscreenElement) {
         try {
-          await document.exitFullscreen();
+          const doc = document as any;
+          const exitFs =
+            doc.exitFullscreen ||
+            doc.webkitExitFullscreen ||
+            doc.mozCancelFullScreen ||
+            doc.msExitFullscreen;
+          if (exitFs) await exitFs.call(doc);
         } catch (e) {}
       }
 
@@ -112,6 +136,7 @@ export const AssessmentSecurityProvider: React.FC<{ children: React.ReactNode }>
       } finally {
         setIsSecureMode(false);
         setIsFullscreen(false);
+        hasEnteredFullscreenRef.current = false;
         expectedPathRef.current = null;
       }
     },
@@ -156,8 +181,8 @@ export const AssessmentSecurityProvider: React.FC<{ children: React.ReactNode }>
       }
 
       try {
-        // Request fullscreen mode
-        await enterFullscreen();
+        // Attempt fullscreen gracefully without crashing if blocked by browser gesture policy
+        enterFullscreen().catch(() => {});
 
         const res = await assessmentSecurityApi.startSession({
           assessmentId: params.assessmentId,
@@ -225,8 +250,6 @@ export const AssessmentSecurityProvider: React.FC<{ children: React.ReactNode }>
             if (typeof sess.remainingSeconds === 'number') {
               setRemainingSeconds(sess.remainingSeconds);
             }
-            // Check if current route is the expected assessment room
-            // If candidate refreshed the page on their assessment route, restore securely!
             const isAssessmentRoute =
               location.pathname.includes('/attend-interview/') ||
               location.pathname.includes('/interview/room/') ||
@@ -237,7 +260,6 @@ export const AssessmentSecurityProvider: React.FC<{ children: React.ReactNode }>
               setIsSecureMode(true);
               expectedPathRef.current = location.pathname;
             } else {
-              // Direct URL navigation to other candidate sections during active assessment!
               terminateAssessment(
                 'UNAUTHORIZED_NAVIGATION',
                 'Candidate attempted to navigate to another section during active assessment.'
@@ -301,16 +323,19 @@ export const AssessmentSecurityProvider: React.FC<{ children: React.ReactNode }>
       }
     };
 
-    // 2. Window focus loss (clicked outside browser, opened other window/app)
+    // 2. Window focus loss
     const handleWindowBlur = () => {
       terminateAssessment('WINDOW_BLUR', 'Browser window lost focus.');
     };
 
-    // 3. Fullscreen exit
+    // 3. Fullscreen exit (only triggers if fullscreen was actually engaged)
     const handleFullscreenChange = () => {
       const isNowFullscreen = !!document.fullscreenElement;
       setIsFullscreen(isNowFullscreen);
-      if (!isNowFullscreen && !isTerminatingRef.current) {
+
+      if (isNowFullscreen) {
+        hasEnteredFullscreenRef.current = true;
+      } else if (hasEnteredFullscreenRef.current && !isTerminatingRef.current) {
         terminateAssessment('FULLSCREEN_EXIT', 'Candidate exited fullscreen mode.');
       }
     };
@@ -339,7 +364,6 @@ export const AssessmentSecurityProvider: React.FC<{ children: React.ReactNode }>
   useEffect(() => {
     if (!isSecureMode || !expectedPathRef.current) return;
 
-    // If candidate navigated away from expected assessment path (and not to session-terminated)
     if (location.pathname !== expectedPathRef.current && !location.pathname.startsWith('/session-terminated')) {
       terminateAssessment(
         'UNAUTHORIZED_NAVIGATION',
