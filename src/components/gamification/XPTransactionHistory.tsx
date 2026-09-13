@@ -1,4 +1,5 @@
 import React, { useState, useEffect, useMemo } from 'react';
+import axios from 'axios';
 import {
   History,
   ArrowDownRight,
@@ -28,7 +29,7 @@ import { XpTransaction, XpTransactionType, XpAction } from '../../types';
 import { xpService } from '../../services/api';
 
 export interface XPTransactionHistoryProps {
-  /** Optional pre-fetched transactions list. If omitted, fetches via xpService.getMyTransactions() */
+  /** Optional pre-fetched transactions list. If omitted, fetches via backend API */
   transactions?: XpTransaction[];
   /** Optional title override */
   title?: string;
@@ -156,23 +157,53 @@ export const XPTransactionHistory: React.FC<XPTransactionHistoryProps> = ({
   const [selectedTx, setSelectedTx] = useState<XpTransaction | null>(null);
   const [copiedId, setCopiedId] = useState<string | null>(null);
 
-  // Fetch transactions if not supplied externally
+  // Resilient transaction fetching from backend
   const loadTransactions = async () => {
     setLoading(true);
     setError(null);
     try {
-      const res = await xpService.getMyTransactions();
-      if (res.success && Array.isArray(res.transactions)) {
-        setTransactions(res.transactions);
-      } else {
-        setTransactions([]);
+      let txns: XpTransaction[] = [];
+      const token =
+        localStorage.getItem('token') ||
+        localStorage.getItem('auth_token') ||
+        localStorage.getItem('accessToken');
+
+      // Primary: Direct call with Axios to /api/gamification/xp-transactions
+      try {
+        const res = await axios.get('/api/gamification/xp-transactions', {
+          headers: token ? { Authorization: `Bearer ${token}` } : {},
+        });
+        const raw = res.data;
+        if (Array.isArray(raw)) {
+          txns = raw;
+        } else if (Array.isArray(raw?.transactions)) {
+          txns = raw.transactions;
+        } else if (Array.isArray(raw?.data)) {
+          txns = raw.data;
+        } else if (Array.isArray(raw?.history)) {
+          txns = raw.history;
+        }
+      } catch (innerErr) {
+        // Fallback: try xpService helper
+        const res = await xpService.getMyTransactions();
+        const raw = (res as any)?.data || res;
+        if (Array.isArray(raw?.transactions)) {
+          txns = raw.transactions;
+        } else if (Array.isArray(raw?.data)) {
+          txns = raw.data;
+        } else if (Array.isArray(raw)) {
+          txns = raw;
+        }
       }
+
+      setTransactions(txns);
     } catch (err: any) {
       console.error('Failed to load XP transactions:', err);
       setError(
         err?.response?.data?.message ||
           'Unable to load your XP transaction history at this time.'
       );
+      setTransactions([]);
     } finally {
       setLoading(false);
     }
@@ -191,9 +222,7 @@ export const XPTransactionHistory: React.FC<XPTransactionHistoryProps> = ({
     if (onRefresh) {
       onRefresh();
     }
-    if (!initialTransactions) {
-      loadTransactions();
-    }
+    loadTransactions();
   };
 
   const copyToClipboard = (text: string, id: string) => {
@@ -403,7 +432,7 @@ export const XPTransactionHistory: React.FC<XPTransactionHistoryProps> = ({
           </div>
         </div>
 
-        {/* Quick Stats Banner (Optional) */}
+        {/* Quick Stats Banner */}
         {showStats && !compact && (
           <div className="grid grid-cols-2 sm:grid-cols-3 gap-3 mt-5 pt-4 border-t border-zinc-200/60 dark:border-zinc-800/60">
             <div className="p-3 rounded-2xl bg-white dark:bg-zinc-800/60 border border-zinc-200/70 dark:border-zinc-700/60 flex items-center justify-between">
@@ -443,7 +472,7 @@ export const XPTransactionHistory: React.FC<XPTransactionHistoryProps> = ({
                   className={`text-base font-black mt-0.5 block ${
                     stats.netChange >= 0
                       ? 'text-emerald-600 dark:text-emerald-400'
-                      : 'text-amber-600 dark:text-amber-400'
+                      : 'text-rose-600 dark:text-rose-400'
                   }`}
                 >
                   {stats.netChange >= 0 ? `+${stats.netChange}` : stats.netChange} XP
@@ -611,7 +640,7 @@ export const XPTransactionHistory: React.FC<XPTransactionHistoryProps> = ({
               const isRefund = isRefundTx(tx);
               const config =
                 TRANSACTION_TYPE_CONFIG[tx.type] || {
-                  label: tx.type.replace(/_/g, ' '),
+                  label: (tx.description || tx.type || '').replace(/_/g, ' '),
                   badge: tx.action === 'DEDUCTION' ? 'Deduction' : 'Credit',
                   icon: isDeduction ? ArrowDownRight : ArrowUpRight,
                   color: isDeduction
@@ -619,7 +648,7 @@ export const XPTransactionHistory: React.FC<XPTransactionHistoryProps> = ({
                     : 'text-emerald-600 dark:text-emerald-400',
                 };
               const Icon = config.icon;
-              const { formatted, dateOnly, timeOnly } = formatTimestamp(tx.createdAt);
+              const { formatted } = formatTimestamp(tx.createdAt);
               const relativeTime = getRelativeTime(tx.createdAt);
               const absAmount = Math.abs(tx.amount);
               const isStatusRefunded = tx.status === 'REFUNDED';
@@ -739,7 +768,7 @@ export const XPTransactionHistory: React.FC<XPTransactionHistoryProps> = ({
         )}
       </div>
 
-      {/* Selected Transaction Audit Details Modal / Drawer */}
+      {/* Selected Transaction Audit Details Modal */}
       {selectedTx && (
         <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-black/60 backdrop-blur-sm animate-in fade-in duration-150">
           <div
@@ -783,7 +812,6 @@ export const XPTransactionHistory: React.FC<XPTransactionHistoryProps> = ({
 
             {/* Modal Body */}
             <div className="p-5 sm:p-6 space-y-4 text-xs">
-              {/* Amount Highlight */}
               <div className="p-4 rounded-2xl bg-zinc-50 dark:bg-zinc-800/50 border border-zinc-200/80 dark:border-zinc-700/60 flex items-center justify-between">
                 <div>
                   <span className="text-[11px] font-semibold text-zinc-500 dark:text-zinc-400 block">
@@ -819,7 +847,6 @@ export const XPTransactionHistory: React.FC<XPTransactionHistoryProps> = ({
                 </div>
               </div>
 
-              {/* Data Grid */}
               <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
                 <div className="p-3 rounded-xl bg-white dark:bg-zinc-800/80 border border-zinc-200/70 dark:border-zinc-700/60">
                   <span className="text-[10px] text-zinc-400 font-semibold block">
@@ -858,7 +885,6 @@ export const XPTransactionHistory: React.FC<XPTransactionHistoryProps> = ({
                 </div>
               </div>
 
-              {/* Description & Reason */}
               <div className="p-3.5 rounded-xl bg-white dark:bg-zinc-800/80 border border-zinc-200/70 dark:border-zinc-700/60 space-y-1">
                 <span className="text-[10px] text-zinc-400 font-semibold block">
                   Description / Audit Reason
@@ -873,7 +899,6 @@ export const XPTransactionHistory: React.FC<XPTransactionHistoryProps> = ({
                 )}
               </div>
 
-              {/* Reference ID & Copy */}
               {selectedTx.referenceId && (
                 <div className="p-3 rounded-xl bg-zinc-50 dark:bg-zinc-800/50 border border-zinc-200/70 dark:border-zinc-700/60 flex items-center justify-between gap-2">
                   <div className="min-w-0">
@@ -898,23 +923,6 @@ export const XPTransactionHistory: React.FC<XPTransactionHistoryProps> = ({
                       <Copy className="w-3.5 h-3.5" />
                     )}
                   </button>
-                </div>
-              )}
-
-              {/* Original Deduction ID (For Refunds) */}
-              {selectedTx.originalTransactionId && (
-                <div className="p-3 rounded-xl bg-purple-50/60 dark:bg-purple-950/30 border border-purple-200/70 dark:border-purple-900/50 flex items-center justify-between gap-2">
-                  <div className="min-w-0">
-                    <span className="text-[10px] text-purple-600 dark:text-purple-400 font-semibold block">
-                      Linked Original Deduction Transaction ID
-                    </span>
-                    <span className="font-mono text-[11px] text-purple-800 dark:text-purple-300 truncate block">
-                      {selectedTx.originalTransactionId}
-                    </span>
-                  </div>
-                  <span className="text-[10px] font-bold px-2 py-0.5 rounded bg-purple-100 text-purple-700 dark:bg-purple-900/60 dark:text-purple-300 shrink-0">
-                    Rollback Link
-                  </span>
                 </div>
               )}
             </div>

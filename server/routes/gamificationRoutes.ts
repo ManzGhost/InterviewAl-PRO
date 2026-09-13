@@ -1,6 +1,7 @@
 import { Router, Response } from 'express';
 import { requireAuth, AuthenticatedRequest } from '../auth';
 import { db } from '../db';
+import { XpTransactionModel } from '../models/XpTransactionModel';
 
 export const gamificationRouter = Router();
 
@@ -149,34 +150,22 @@ gamificationRouter.post('/notifications/:id/read', requireAuth, (req: Authentica
 // Buy XP package endpoint with payment gateway
 gamificationRouter.post('/xp/buy', requireAuth, (req: AuthenticatedRequest, res: Response) => {
   const user = req.user!;
-  const { xp, title, price, paymentMethod, cardLast4 } = req.body;
+  const { xp, price, paymentMethod, cardLast4 } = req.body;
   const points = Math.max(50, Math.min(10000, Number(xp) || 500));
 
   const txnId = `TXN-${Date.now().toString(36).toUpperCase()}-${Math.floor(1000 + Math.random() * 9000)}`;
   const paymentMethodLabel = paymentMethod === 'razorpay'
     ? 'Razorpay (UPI / Cards / NetBanking)'
-    : paymentMethod === 'realtime_instant'
-    ? 'Real-Time Instant Rail (ISO 20022 / UPI)'
-    : paymentMethod === 'google_pay'
-    ? 'Google Pay (Real-Time)'
-    : paymentMethod === 'apple_pay'
-    ? 'Apple Pay (Real-Time)'
-    : paymentMethod === 'paypal'
-    ? 'PayPal Express (Real-Time)'
     : cardLast4
     ? `Real-Time Card ending in ${cardLast4}`
-    : 'Real-Time Credit/Debit Card';
-
-  const rzpPaymentId = paymentMethod === 'razorpay'
-    ? `pay_${Date.now().toString(36)}${Math.random().toString(36).substring(2, 7)}`
-    : undefined;
+    : 'Online Payment';
 
   const xpResult = db.awardXpWithTransaction(
     user.id,
     points,
     'ADDITION',
     `Purchased ${points} XP via ${paymentMethodLabel} (${price || '$6.99'})`,
-    { referenceId: rzpPaymentId || txnId }
+    { referenceId: txnId }
   );
 
   const updatedUser = db.getUserById(user.id);
@@ -184,8 +173,8 @@ gamificationRouter.post('/xp/buy', requireAuth, (req: AuthenticatedRequest, res:
   db.addNotification({
     id: 'notif_' + Date.now(),
     userId: user.id,
-    title: paymentMethod === 'razorpay' ? 'Razorpay Payment Successful! ⚡' : 'Real-Time Payment Confirmed! ⚡',
-    message: `Payment of ${price || '$6.99'} via ${paymentMethodLabel} cleared instantly! (+${points} XP, Ref: ${rzpPaymentId || txnId}). You are now at ${xpResult.xp} XP (${xpResult.level})!`,
+    title: 'Payment Successful! ⚡',
+    message: `Payment of ${price || '$6.99'} cleared (+${points} XP). Balance is now ${xpResult.xp} XP (${xpResult.level})!`,
     createdAt: new Date().toISOString(),
     read: false,
     type: 'ACHIEVEMENT',
@@ -193,19 +182,13 @@ gamificationRouter.post('/xp/buy', requireAuth, (req: AuthenticatedRequest, res:
 
   return res.json({
     success: true,
-    message: paymentMethod === 'razorpay' ? `Razorpay payment authorized! Added +${points} XP.` : `Real-time payment successful! Added +${points} XP in 280ms.`,
+    message: `Payment authorized! Added +${points} XP.`,
     xp: xpResult.xp,
     level: xpResult.level,
     leveledUp: xpResult.leveledUp,
     user: updatedUser,
     transaction: xpResult.transaction,
-    transactionId: rzpPaymentId || txnId,
-    razorpayPaymentId: rzpPaymentId,
-    razorpayOrderId: paymentMethod === 'razorpay' ? `order_${Date.now().toString(36)}` : undefined,
-    paymentMethod: paymentMethodLabel,
-    amount: price || '$6.99',
-    clearingLatency: paymentMethod === 'razorpay' ? '180ms' : '280ms',
-    settlementNetwork: paymentMethod === 'razorpay' ? 'Razorpay PG & UPI Highway' : 'ISO 20022 Real-Time Rail',
+    transactionId: txnId,
     timestamp: new Date().toISOString(),
   });
 });
@@ -224,22 +207,40 @@ gamificationRouter.get('/xp-balance', requireAuth, (req: AuthenticatedRequest, r
   });
 });
 
-// GET /api/gamification/xp-transactions (Multi-ID lookup + Auto-Backfill for Current XP)
-gamificationRouter.get('/xp-transactions', requireAuth, (req: AuthenticatedRequest, res: Response) => {
+// GET /api/gamification/xp-transactions (Direct MongoDB Atlas Query + Auto-Backfill)
+gamificationRouter.get('/xp-transactions', requireAuth, async (req: AuthenticatedRequest, res: Response) => {
   try {
     const user = req.user!;
-    const userIdStr = String(user.id || (user as any)._id || '');
-    const userEmailStr = String(user.email || '').toLowerCase();
+    const userIdStr = String(user.id || (user as any)._id || '').trim();
+    const userEmailStr = String(user.email || '').trim().toLowerCase();
 
-    // 1. Fetch using all possible identifier variants (id, _id, email)
-    const allTxns = db.getAllXpTransactions ? db.getAllXpTransactions() : db.getXpTransactions();
-    let userTxns = allTxns.filter((t) => {
-      const matchId = String(t.userId) === userIdStr || (user.id && String(t.userId) === String(user.id));
-      const matchEmail = t.userEmail && String(t.userEmail).toLowerCase() === userEmailStr;
-      return matchId || matchEmail;
-    });
+    // 1. Direct fetch from MongoDB Atlas 'xp_transactions' collection
+    let userTxns: any[] = [];
+    try {
+      userTxns = await XpTransactionModel.find({
+        $or: [
+          { userId: userIdStr },
+          { userId: String(user.id) },
+          { userEmail: userEmailStr },
+        ],
+      })
+        .sort({ createdAt: -1 })
+        .lean();
+    } catch (err: any) {
+      console.warn('[Gamification Router] Atlas query fallback to db cache:', err?.message);
+    }
 
-    // 2. Auto-backfill: Agar user ke paas XP hai (jaise 210 XP) par history 0 hai toh record create karein
+    // Fallback to in-memory db cache if Atlas returned empty
+    if (!userTxns || userTxns.length === 0) {
+      const allTxns = db.getAllXpTransactions ? db.getAllXpTransactions() : db.getXpTransactions();
+      userTxns = allTxns.filter((t: any) => {
+        const matchId = String(t.userId).trim() === userIdStr || (user.id && String(t.userId).trim() === String(user.id).trim());
+        const matchEmail = t.userEmail && String(t.userEmail).trim().toLowerCase() === userEmailStr;
+        return matchId || matchEmail;
+      });
+    }
+
+    // 2. Auto-backfill if balance > 0 but transaction collection was empty
     const currentPoints = user.xpPoints || 0;
     if (userTxns.length === 0 && currentPoints > 0) {
       const backfillTxn = db.recordTransaction({
@@ -258,22 +259,24 @@ gamificationRouter.get('/xp-transactions', requireAuth, (req: AuthenticatedReque
       userTxns = [backfillTxn];
     }
 
-    // 3. Stats calculations for top cards
+    // 3. Calculate summary metrics
     const deductionsList = userTxns.filter(
-      (t) => t.amount < 0 || t.action === 'DEDUCTION' || t.type === 'XP_DEDUCTED'
+      (t: any) => Number(t.amount) < 0 || t.action === 'DEDUCTION' || t.type === 'XP_DEDUCTED'
     );
     const refundsList = userTxns.filter(
-      (t) => t.amount > 0 && (t.action === 'ADDITION' || t.type?.includes('REFUND') || t.type === 'BONUS_EARNED')
+      (t: any) => Number(t.amount) > 0 && (t.action === 'ADDITION' || String(t.type || '').includes('REFUND') || t.type === 'BONUS_EARNED')
     );
 
-    const totalDeductions = deductionsList.reduce((sum, t) => sum + Math.abs(t.amount), 0);
-    const totalRefunds = refundsList.reduce((sum, t) => sum + t.amount, 0);
+    const totalDeductions = deductionsList.reduce((sum: number, t: any) => sum + Math.abs(Number(t.amount) || 0), 0);
+    const totalRefunds = refundsList.reduce((sum: number, t: any) => sum + (Number(t.amount) || 0), 0);
 
     return res.json({
       success: true,
       transactions: userTxns,
-      data: userTxns, // fallback for components reading res.data.data
+      data: userTxns, // fallback for components expecting res.data.data
+      history: userTxns,
       totalTransactions: userTxns.length,
+      totalCount: userTxns.length,
       deductions: totalDeductions,
       refunds: totalRefunds,
       totalDeductions,
@@ -295,7 +298,7 @@ gamificationRouter.get('/xp-transactions', requireAuth, (req: AuthenticatedReque
   }
 });
 
-// GET /api/gamification/xp-settings (public costs for client UI)
+// GET /api/gamification/xp-settings
 gamificationRouter.get('/xp-settings', requireAuth, (_req: AuthenticatedRequest, res: Response) => {
   const settings = db.getXpSettings();
   return res.json({

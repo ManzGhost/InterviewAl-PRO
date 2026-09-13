@@ -10,14 +10,7 @@ function getAiClient(): GoogleGenAI | null {
     return null;
   }
   if (!aiClient) {
-    aiClient = new GoogleGenAI({
-      apiKey,
-      httpOptions: {
-        headers: {
-          'User-Agent': 'aistudio-build',
-        },
-      },
-    });
+    aiClient = new GoogleGenAI({ apiKey });
   }
   return aiClient;
 }
@@ -50,6 +43,7 @@ function isRetryableError(err: any): boolean {
     status === 'UNAVAILABLE' ||
     status === 'RESOURCE_EXHAUSTED' ||
     message.includes('503') ||
+    message.includes('429') ||
     message.includes('high demand') ||
     message.includes('UNAVAILABLE') ||
     message.includes('RESOURCE_EXHAUSTED') ||
@@ -59,8 +53,8 @@ function isRetryableError(err: any): boolean {
   );
 }
 
-// Valid, supported flash models for text tasks
-const CANDIDATE_MODELS = ['gemini-3.8-flash', 'gemini-flash-latest', 'gemini-3.1-flash-lite'];
+// Valid, currently supported production Gemini models (Primary + Fallbacks)
+const CANDIDATE_MODELS = ['gemini-2.5-flash', 'gemini-2.0-flash', 'gemini-1.5-flash'];
 
 async function generateWithRetry(options: {
   contents: string;
@@ -90,18 +84,17 @@ async function generateWithRetry(options: {
       } catch (err: any) {
         const retryable = isRetryableError(err);
         if (retryable && attempt < maxRetries) {
-          const delay = (attempt + 1) * 500 + Math.floor(Math.random() * 200);
-          console.log(`[AI] Model ${model} is experiencing temporary high demand. Retrying in ${delay}ms (attempt ${attempt + 1}/${maxRetries})...`);
+          const delay = (attempt + 1) * 600 + Math.floor(Math.random() * 200);
+          console.log(`[AI] Model ${model} rate-limited or busy. Retrying in ${delay}ms (${attempt + 1}/${maxRetries})...`);
           await sleep(delay);
           continue;
         }
 
         if (retryable) {
-          console.warn(`[AI] Model ${model} temporary high demand limit reached. Trying next candidate model...`);
-          break; // Switch to next candidate model
+          console.warn(`[AI] Model ${model} retry limit reached. Falling back to next candidate model...`);
+          break;
         }
 
-        // Non-retryable error, try next candidate model
         console.warn(`[AI] Gemini generation error on ${model}:`, err?.message || err);
         break;
       }
@@ -111,7 +104,7 @@ async function generateWithRetry(options: {
   return null;
 }
 
-// Track if pro model free-tier quota is zero or exhausted to prevent wasted roundtrips
+// Track pro model quota to avoid unnecessary timeouts
 let proModelQuotaExhausted = false;
 
 export class AiService {
@@ -130,7 +123,7 @@ export class AiService {
   }): Promise<{ question: string; category: string; difficulty: 'Beginner' | 'Intermediate' | 'Advanced' }> {
     db.incrementAiRequests();
     const companyPrompt = params.companyName
-      ? `Practice questions inspired by ${params.companyName}'s engineering and interview culture (clearly as practice).`
+      ? `Practice questions inspired by ${params.companyName}'s engineering culture.`
       : 'General industry top-tier interview standard.';
 
     const prompt = `You are a Principal Technical Interviewer and Hiring Manager for the role: ${params.jobRole}.
@@ -184,7 +177,7 @@ Respond in STRICT JSON format:
         'How does React Virtual DOM reconciliation work, and when should you use useCallback vs useMemo to avoid unnecessary re-renders?',
         'Explain the browser Critical Rendering Path and techniques you use to achieve sub-second Core Web Vitals (LCP, FID, CLS).',
         'How do modern CSS-in-JS and utility frameworks compare with CSS Modules in terms of bundle size and runtime performance?',
-        'Explain the differences between Server-Side Rendering (SSR), Static Site Generation (SSG), and Client-Side Rendering (CSR) in modern web applications.',
+        'Explain the differences between Server-Side Rendering (SSR), Static Site Generation (SSG), and Client-Side Rendering (CSR).',
         'How do you secure web applications against Cross-Site Scripting (XSS) and Cross-Site Request Forgery (CSRF)?',
       ];
     } else if (roleLower.includes('python') || roleLower.includes('data') || roleLower.includes('ai') || roleLower.includes('machine')) {
@@ -204,7 +197,6 @@ Respond in STRICT JSON format:
         'Explain the difference between horizontal pod autoscaling (HPA) and cluster autoscaling in cloud Kubernetes environments.',
       ];
     } else {
-      // Standard / Java / Backend
       technicalQuestions = [
         'How does the Java Memory Model handle heap vs stack allocations, and how does garbage collection reclaim unreferenced objects in high-throughput services?',
         'Explain how Spring Boot manages singleton bean lifecycles and what happens when a singleton bean injects a prototype-scoped bean.',
@@ -424,14 +416,12 @@ Respond in STRICT JSON:
 
     if (jsonText) {
       try {
-        const parsed = JSON.parse(jsonText);
-        return parsed;
+        return JSON.parse(jsonText);
       } catch (err) {
         console.warn('[AI] Error parsing analyzeResume JSON, using fallback:', err);
       }
     }
 
-    // Heuristic Fallback
     const detectedSkills = ['Java', 'Spring Boot', 'React', 'JavaScript', 'HTML/CSS', 'SQL', 'Git', 'REST APIs', 'Data Structures'];
     return {
       name: 'Software Candidate',
@@ -524,7 +514,6 @@ Respond in STRICT JSON:
       }
     }
 
-    // Heuristic match
     return {
       resumeMatchPercentage: 76,
       skillMatchPercentage: 80,
@@ -661,7 +650,7 @@ Respond in STRICT JSON:
         { day: 'Day 1', topic: 'Spring Security Architecture & JWT Handshake', details: 'Master OncePerRequestFilter, SecurityFilterChain, and stateless token validation.', estimatedHours: 3 },
         { day: 'Day 2', topic: 'Database Indexing & Query Plan Profiling', details: 'Study B-Tree indices, composite index ordering, and MongoDB aggregation pipelines.', estimatedHours: 3 },
         { day: 'Day 3', topic: 'Microservices Communication & Resilience', details: 'Implement Circuit Breakers (Resilience4j), retry mechanisms, and async messaging.', estimatedHours: 4 },
-        { day: 'Day 4', topic: 'React Concurrency, Custom Hooks & Memoization', details: 'Practice optimizing rendering performance using useMemo, useCallback, and React 19 primitives.', estimatedHours: 3 },
+        { day: 'Day 4', topic: 'React Concurrency, Custom Hooks & Memoization', details: 'Practice optimizing rendering performance using useMemo, useCallback, and React primitives.', estimatedHours: 3 },
         { day: 'Day 5', topic: 'High-Level System Design & Mock Interview', details: 'Design a distributed rate limiter and a notification engine. Practice live communication.', estimatedHours: 4 },
       ],
     };
@@ -868,26 +857,21 @@ class Solution {
   }): Promise<{ reply: string; modelUsed: string }> {
     db.incrementAiRequests();
 
-    // Model selection based on task complexity:
-    // - gemini-3.8-flash for general tasks & high-reliability reasoning (primary)
-    // - gemini-3.1-pro-preview for particularly complex tasks (requires billing; auto-falls back to flash)
-    // - gemini-3.1-flash-lite for tasks that should happen fast
-    let targetModel = params.model || 'gemini-3.8-flash';
-    const validModels = ['gemini-3.8-flash', 'gemini-3.1-pro-preview', 'gemini-3.5-flash', 'gemini-3.1-flash-lite'];
+    let targetModel = params.model || 'gemini-2.5-flash';
+    const validModels = ['gemini-2.5-flash', 'gemini-2.5-pro', 'gemini-2.0-flash', 'gemini-1.5-flash'];
     if (!validModels.includes(targetModel)) {
-      targetModel = 'gemini-3.8-flash';
+      targetModel = 'gemini-2.5-flash';
     }
 
-    // If pro model free-tier quota is already identified as zero/exhausted, route to gemini-3.8-flash directly
-    if (targetModel === 'gemini-3.1-pro-preview' && proModelQuotaExhausted) {
-      targetModel = 'gemini-3.8-flash';
+    if (targetModel === 'gemini-2.5-pro' && proModelQuotaExhausted) {
+      targetModel = 'gemini-2.5-flash';
     }
 
     const ai = getAiClient();
     if (!ai) {
       const lastUserMsg = [...params.messages].reverse().find((m) => m.role === 'user')?.content || '';
       return {
-        reply: `*(Preview Mode - Gemini API key not configured)*\n\nI received your query regarding:\n> "${lastUserMsg}"\n\nTo connect live with **${targetModel}**, ensure your \`GEMINI_API_KEY\` is configured in Settings. In the meantime, you can test multi-turn conversations, role switches, and message history seamlessly!`,
+        reply: `*(Preview Mode - Gemini API key not configured)*\n\nI received your query regarding:\n> "${lastUserMsg}"\n\nTo connect live with **${targetModel}**, ensure your \`GEMINI_API_KEY\` is configured.`,
         modelUsed: `${targetModel} (local)`,
       };
     }
@@ -898,13 +882,12 @@ class Solution {
       parts: [{ text: m.content }],
     }));
 
-    // Primary model first, fallback to flash models if temporary demand spikes or free-tier quota limits occur
-    const candidateFallbackModels = [targetModel, 'gemini-3.8-flash', 'gemini-flash-latest', 'gemini-3.1-flash-lite'].filter(
+    const candidateFallbackModels = [targetModel, 'gemini-2.5-flash', 'gemini-2.0-flash', 'gemini-1.5-flash'].filter(
       (m, idx, arr) => arr.indexOf(m) === idx
     );
 
     for (const modelToTry of candidateFallbackModels) {
-      if (modelToTry === 'gemini-3.1-pro-preview' && proModelQuotaExhausted) {
+      if (modelToTry === 'gemini-2.5-pro' && proModelQuotaExhausted) {
         continue;
       }
 
@@ -931,23 +914,20 @@ class Solution {
           isRetryableError(err) ||
           errMsg.includes('429') ||
           errMsg.includes('quota') ||
-          errMsg.includes('Quota exceeded') ||
           errMsg.includes('limit: 0');
 
-        if (modelToTry === 'gemini-3.1-pro-preview' && isQuotaOrLimit) {
+        if (modelToTry === 'gemini-2.5-pro' && isQuotaOrLimit) {
           proModelQuotaExhausted = true;
-          console.log(`[AI Chat] Note: gemini-3.1-pro-preview free-tier quota is not available (limit 0). Seamlessly falling back to ${candidateFallbackModels[1]}...`);
-        } else if (isQuotaOrLimit) {
-          console.log(`[AI Chat] Model ${modelToTry} rate limit encountered. Falling back to alternative model...`);
+          console.log(`[AI Chat] gemini-2.5-pro quota exhausted. Seamlessly falling back to ${candidateFallbackModels[1]}...`);
         } else {
-          console.log(`[AI Chat] Notice on model ${modelToTry}. Proceeding to fallback model...`);
+          console.log(`[AI Chat] Error on ${modelToTry}. Proceeding to fallback model...`);
         }
       }
     }
 
     const lastUserMsg = [...params.messages].reverse().find((m) => m.role === 'user')?.content || '';
     return {
-      reply: `I encountered a momentary high load connecting to the AI model. For your question about "${lastUserMsg.slice(0, 60)}...", please try again in a few moments.`,
+      reply: `I encountered high load connecting to the AI model. For your question about "${lastUserMsg.slice(0, 60)}...", please try again in a few moments.`,
       modelUsed: targetModel,
     };
   }
