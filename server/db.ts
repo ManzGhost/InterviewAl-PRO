@@ -280,7 +280,7 @@ class DatabaseService {
 
   public saveResume(resume: ResumeDocument): ResumeDocument {
     if (!this.data.resumes) this.data.resumes = [];
-    const idx = this.data.resumes.findIndex((r) => r.id === resume.id);
+    const idx = this.data.resetResumesIdx !== undefined ? this.data.resetResumesIdx : this.data.resumes.findIndex((r) => r.id === resume.id);
     if (idx >= 0) {
       this.data.resumes[idx] = resume;
     } else {
@@ -352,7 +352,7 @@ class DatabaseService {
     return this.data.interviews[idx];
   }
 
-  // Clear Interview History (Controller dono method names ko call kar sakta hai)
+  // Clear Interview History
   public clearInterviewHistory(userId: string): boolean {
     if (!this.data.interviews) this.data.interviews = [];
     this.data.interviews = this.data.interviews.filter((i) => i.userId !== userId);
@@ -675,6 +675,19 @@ class DatabaseService {
     this.data.secureAssessments.unshift(session);
     this.save();
     return session;
+  }
+
+  // --- Aliases for Assessment Start Endpoints ---
+  public createSecureAssessment(params: any): SecureAssessmentSession {
+    return this.startSecureAssessment(params);
+  }
+
+  public createAssessment(params: any): SecureAssessmentSession {
+    return this.startSecureAssessment(params);
+  }
+
+  public getAssessmentById(id: string): SecureAssessmentSession | undefined {
+    return this.getSecureAssessmentById(id);
   }
 
   public recordViolation(
