@@ -28,34 +28,51 @@ export const apiClient = axios.create({
   },
 });
 
-// Request interceptor to attach JWT
+// Backward compatibility: components importing 'api' or default export
+export const api = apiClient;
+export default apiClient;
+
+// Request interceptor to attach JWT (checks all potential token keys)
 apiClient.interceptors.request.use((config) => {
-  const token = localStorage.getItem('interviewai_token');
+  const token =
+    localStorage.getItem('interviewai_token') ||
+    localStorage.getItem('token') ||
+    localStorage.getItem('auth_token') ||
+    localStorage.getItem('accessToken');
+
   if (token && config.headers) {
     config.headers.Authorization = `Bearer ${token}`;
   }
   return config;
 });
 
-// Response interceptor for token refresh handling
+// Response interceptor for token refresh handling and 401 recovery
 apiClient.interceptors.response.use(
   (response) => response,
   async (error) => {
     const originalRequest = error.config;
     if (error.response?.status === 401 && !originalRequest._retry) {
       originalRequest._retry = true;
-      const refreshToken = localStorage.getItem('interviewai_refresh_token');
+      const refreshToken =
+        localStorage.getItem('interviewai_refresh_token') ||
+        localStorage.getItem('refreshToken');
+
       if (refreshToken) {
         try {
           const res = await axios.post(`${API_BASE_URL}/auth/refresh`, { refreshToken });
-          if (res.data?.accessToken) {
-            localStorage.setItem('interviewai_token', res.data.accessToken);
-            apiClient.defaults.headers.common.Authorization = `Bearer ${res.data.accessToken}`;
+          const newToken = (res.data as any)?.accessToken || (res.data as any)?.token;
+          if (newToken) {
+            localStorage.setItem('interviewai_token', newToken);
+            localStorage.setItem('token', newToken);
+            apiClient.defaults.headers.common.Authorization = `Bearer ${newToken}`;
+            originalRequest.headers.Authorization = `Bearer ${newToken}`;
             return apiClient(originalRequest);
           }
         } catch (refreshErr) {
           localStorage.removeItem('interviewai_token');
+          localStorage.removeItem('token');
           localStorage.removeItem('interviewai_refresh_token');
+          localStorage.removeItem('refreshToken');
         }
       }
     }
@@ -66,10 +83,20 @@ apiClient.interceptors.response.use(
 export const authService = {
   login: async (credentials: { email: string; password: string }): Promise<AuthResponse> => {
     const res = await apiClient.post<AuthResponse>('/auth/login', credentials);
+    const receivedToken = (res.data as any)?.token || (res.data as any)?.accessToken;
+    if (receivedToken) {
+      localStorage.setItem('interviewai_token', receivedToken);
+      localStorage.setItem('token', receivedToken);
+    }
     return res.data;
   },
   register: async (data: any): Promise<AuthResponse> => {
     const res = await apiClient.post<AuthResponse>('/auth/register', data);
+    const receivedToken = (res.data as any)?.token || (res.data as any)?.accessToken;
+    if (receivedToken) {
+      localStorage.setItem('interviewai_token', receivedToken);
+      localStorage.setItem('token', receivedToken);
+    }
     return res.data;
   },
   validateAdminCode: async (code: string) => {
@@ -96,7 +123,15 @@ export const authService = {
     return res.data;
   },
   logout: async () => {
-    return apiClient.post('/auth/logout');
+    try {
+      await apiClient.post('/auth/logout');
+    } finally {
+      localStorage.removeItem('interviewai_token');
+      localStorage.removeItem('token');
+      localStorage.removeItem('auth_token');
+      localStorage.removeItem('interviewai_refresh_token');
+      localStorage.removeItem('refreshToken');
+    }
   },
   forgotPassword: async (email: string) => {
     const res = await apiClient.post('/auth/forgot-password', { email });
@@ -486,6 +521,7 @@ export const adminService = {
       success: boolean;
       message: string;
       deletedCandidate?: any;
+      deletedCounts?: any;
     }>(`/admin/candidates/${id}`);
     return res.data;
   },
@@ -501,7 +537,6 @@ export const adminService = {
     const res = await apiClient.delete(`/admin/questions/${id}`);
     return res.data;
   },
-  // --- Question Bank (Interview Questions) ---
   getInterviewQuestions: async () => {
     const res = await apiClient.get<{
       success: boolean;
@@ -541,7 +576,6 @@ export const adminService = {
     }>(`/admin/interview-questions/${id}`);
     return res.data;
   },
-  // --- Scheduled Interviews ---
   getScheduledInterviews: async () => {
     const res = await apiClient.get<{
       success: boolean;
@@ -825,4 +859,3 @@ export const xpService = {
     return res.data;
   },
 };
-

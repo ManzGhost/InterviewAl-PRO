@@ -1,5 +1,4 @@
 import React, { useState, useEffect, useMemo } from 'react';
-import axios from 'axios';
 import {
   History,
   ArrowDownRight,
@@ -26,7 +25,7 @@ import {
   ExternalLink,
 } from 'lucide-react';
 import { XpTransaction, XpTransactionType, XpAction } from '../../types';
-import { xpService } from '../../services/api';
+import { apiClient, xpService } from '../../services/api';
 
 export interface XPTransactionHistoryProps {
   /** Optional pre-fetched transactions list. If omitted, fetches via backend API */
@@ -157,22 +156,16 @@ export const XPTransactionHistory: React.FC<XPTransactionHistoryProps> = ({
   const [selectedTx, setSelectedTx] = useState<XpTransaction | null>(null);
   const [copiedId, setCopiedId] = useState<string | null>(null);
 
-  // Resilient transaction fetching from backend
+  // Resilient transaction fetching via apiClient with automatic JWT token attachment
   const loadTransactions = async () => {
     setLoading(true);
     setError(null);
     try {
       let txns: XpTransaction[] = [];
-      const token =
-        localStorage.getItem('token') ||
-        localStorage.getItem('auth_token') ||
-        localStorage.getItem('accessToken');
 
-      // Primary: Direct call with Axios to /api/gamification/xp-transactions
       try {
-        const res = await axios.get('/api/gamification/xp-transactions', {
-          headers: token ? { Authorization: `Bearer ${token}` } : {},
-        });
+        // apiClient automatically injects Authorization header from localStorage via api.ts interceptor
+        const res = await apiClient.get('/gamification/xp-transactions');
         const raw = res.data;
         if (Array.isArray(raw)) {
           txns = raw;
@@ -184,7 +177,7 @@ export const XPTransactionHistory: React.FC<XPTransactionHistoryProps> = ({
           txns = raw.history;
         }
       } catch (innerErr) {
-        // Fallback: try xpService helper
+        // Fallback helper via xpService
         const res = await xpService.getMyTransactions();
         const raw = (res as any)?.data || res;
         if (Array.isArray(raw?.transactions)) {
