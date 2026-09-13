@@ -195,7 +195,7 @@ class DatabaseService {
   }
 
   public getUserById(id: string): User | undefined {
-    const user = this.data.users.find((u) => u.id === id);
+    const user = this.data.users.find((u) => u.id === id || String((u as any)._id) === String(id));
     return user ? this.populateAssignedAdmin(user) : undefined;
   }
 
@@ -226,7 +226,7 @@ class DatabaseService {
   }
 
   public updateUser(id: string, updates: Partial<User>): User | undefined {
-    const idx = this.data.users.findIndex((u) => u.id === id);
+    const idx = this.data.users.findIndex((u) => u.id === id || String((u as any)._id) === String(id));
     if (idx === -1) return undefined;
     this.data.users[idx] = { ...this.data.users[idx], ...updates, updatedAt: new Date().toISOString() };
     UserModel.findOneAndUpdate({ id }, updates).catch((err: any) => {
@@ -236,17 +236,18 @@ class DatabaseService {
   }
 
   public permanentlyDeleteUserAndAllData(userId: string): { success: boolean; deletedUser?: User } {
-    const userIdx = this.data.users.findIndex((u) => u.id === userId);
+    const userIdx = this.data.users.findIndex((u) => u.id === userId || String((u as any)._id) === String(userId));
     if (userIdx === -1) return { success: false };
 
     const [deletedUser] = this.data.users.splice(userIdx, 1);
-    this.data.resumes = (this.data.resumes || []).filter((r) => r.userId !== userId);
-    this.data.jobDescriptions = (this.data.jobDescriptions || []).filter((j) => j.userId !== userId);
-    this.data.interviews = (this.data.interviews || []).filter((i) => i.userId !== userId);
-    this.data.performances = (this.data.performances || []).filter((p) => p.userId !== userId);
-    this.data.achievements = (this.data.achievements || []).filter((a) => a.userId !== userId);
-    this.data.notifications = (this.data.notifications || []).filter((n) => n.userId !== userId);
-    this.data.secureAssessments = (this.data.secureAssessments || []).filter((s) => (s as any).candidateId !== userId);
+    this.data.resumes = (this.data.resumes || []).filter((r) => String(r.userId) !== String(userId));
+    this.data.jobDescriptions = (this.data.jobDescriptions || []).filter((j) => String(j.userId) !== String(userId));
+    this.data.interviews = (this.data.interviews || []).filter((i) => String(i.userId) !== String(userId));
+    this.data.performances = (this.data.performances || []).filter((p) => String(p.userId) !== String(userId));
+    this.data.achievements = (this.data.achievements || []).filter((a) => String(a.userId) !== String(userId));
+    this.data.notifications = (this.data.notifications || []).filter((n) => String(n.userId) !== String(userId));
+    this.data.secureAssessments = (this.data.secureAssessments || []).filter((s) => String((s as any).candidateId) !== String(userId));
+    this.data.xpTransactions = (this.data.xpTransactions || []).filter((x) => String(x.userId) !== String(userId));
 
     this.save();
     UserModel.deleteOne({ id: userId }).catch((err: any) => {
@@ -263,7 +264,7 @@ class DatabaseService {
 
   // --- Resumes ---
   public getResumesByUser(userId: string): ResumeDocument[] {
-    return (this.data.resumes || []).filter((r) => r.userId === userId);
+    return (this.data.resumes || []).filter((r) => String(r.userId) === String(userId));
   }
 
   public getResumeById(id: string): ResumeDocument | undefined {
@@ -283,7 +284,7 @@ class DatabaseService {
   }
 
   public deleteResume(id: string, userId: string): boolean {
-    const idx = (this.data.resumes || []).findIndex((r) => r.id === id && r.userId === userId);
+    const idx = (this.data.resumes || []).findIndex((r) => r.id === id && String(r.userId) === String(userId));
     if (idx === -1) return false;
     this.data.resumes.splice(idx, 1);
     this.save();
@@ -292,7 +293,7 @@ class DatabaseService {
 
   // --- Job Descriptions ---
   public getJobDescriptionsByUser(userId: string): JobDescriptionDocument[] {
-    return (this.data.jobDescriptions || []).filter((j) => j.userId === userId);
+    return (this.data.jobDescriptions || []).filter((j) => String(j.userId) === String(userId));
   }
 
   public getJobDescriptionById(id: string): JobDescriptionDocument | undefined {
@@ -308,7 +309,7 @@ class DatabaseService {
 
   // --- Interviews & History Management ---
   public getInterviewsByUser(userId: string): InterviewSession[] {
-    return (this.data.interviews || []).filter((i) => i.userId === userId);
+    return (this.data.interviews || []).filter((i) => String(i.userId) === String(userId));
   }
 
   public getAllInterviews(): InterviewSession[] {
@@ -346,9 +347,9 @@ class DatabaseService {
 
   public clearInterviewHistory(userId: string): boolean {
     if (!this.data.interviews) this.data.interviews = [];
-    this.data.interviews = this.data.interviews.filter((i) => i.userId !== userId);
+    this.data.interviews = this.data.interviews.filter((i) => String(i.userId) !== String(userId));
     if (this.data.secureAssessments) {
-      this.data.secureAssessments = this.data.secureAssessments.filter((s) => s.candidateId !== userId);
+      this.data.secureAssessments = this.data.secureAssessments.filter((s) => String(s.candidateId) !== String(userId));
     }
     this.save();
     return true;
@@ -362,7 +363,7 @@ class DatabaseService {
     if (!this.data.interviews) return false;
     const prevCount = this.data.interviews.length;
     this.data.interviews = this.data.interviews.filter((i) => {
-      if (userId) return !(i.id === id && i.userId === userId);
+      if (userId) return !(i.id === id && String(i.userId) === String(userId));
       return i.id !== id;
     });
     const removed = this.data.interviews.length < prevCount;
@@ -373,7 +374,7 @@ class DatabaseService {
   public clearActiveCandidateSessions(candidateId: string): void {
     if (!this.data.secureAssessments) this.data.secureAssessments = [];
     this.data.secureAssessments.forEach((s) => {
-      if (s.candidateId === candidateId && s.status === 'IN_PROGRESS') {
+      if (String(s.candidateId) === String(candidateId) && s.status === 'IN_PROGRESS') {
         s.status = 'COMPLETED';
         s.endedAt = new Date().toISOString();
         s.updatedAt = new Date().toISOString();
@@ -382,7 +383,7 @@ class DatabaseService {
 
     if (!this.data.interviews) this.data.interviews = [];
     this.data.interviews.forEach((i) => {
-      if (i.userId === candidateId && i.status === 'IN_PROGRESS') {
+      if (String(i.userId) === String(candidateId) && i.status === 'IN_PROGRESS') {
         i.status = 'COMPLETED';
         i.completedAt = new Date().toISOString();
       }
@@ -392,7 +393,7 @@ class DatabaseService {
 
   // --- Performance & Achievements ---
   public getPerformancesByUser(userId: string): PerformanceRecord[] {
-    return (this.data.performances || []).filter((p) => p.userId === userId);
+    return (this.data.performances || []).filter((p) => String(p.userId) === String(userId));
   }
 
   public addPerformance(perf: PerformanceRecord): PerformanceRecord {
@@ -403,7 +404,7 @@ class DatabaseService {
   }
 
   public getAchievementsByUser(userId: string): AchievementItem[] {
-    return (this.data.achievements || []).filter((a) => a.userId === userId);
+    return (this.data.achievements || []).filter((a) => String(a.userId) === String(userId));
   }
 
   public addAchievement(item: AchievementItem): AchievementItem {
@@ -415,7 +416,7 @@ class DatabaseService {
 
   // --- Notifications ---
   public getNotificationsByUser(userId: string): NotificationItem[] {
-    return (this.data.notifications || []).filter((n) => n.userId === userId);
+    return (this.data.notifications || []).filter((n) => String(n.userId) === String(userId));
   }
 
   public addNotification(notif: NotificationItem): NotificationItem {
@@ -471,7 +472,6 @@ class DatabaseService {
     return { xp: newXp, level: newLevel, deducted, success: true };
   }
 
-  // Supports both single object argument and multiple positional arguments
   public deductXpWithTransaction(
     paramOrUserId: any,
     amountArg?: number,
@@ -502,7 +502,7 @@ class DatabaseService {
     const newBalance = result.xp;
 
     const transaction = this.recordTransaction({
-      userId,
+      userId: String(userId),
       userEmail: user?.email || '',
       userName: user?.name || '',
       userRole: user?.role || 'USER',
@@ -540,7 +540,7 @@ class DatabaseService {
     const awardResult = this.awardXp(params.userId, params.amount);
 
     return this.recordTransaction({
-      userId: params.userId,
+      userId: String(params.userId),
       userEmail: user?.email || '',
       userName: user?.name || '',
       userRole: user?.role || 'USER',
@@ -560,6 +560,7 @@ class DatabaseService {
       id: `xp_txn_${Date.now()}_${Math.random().toString(36).substring(2, 7)}`,
       createdAt: new Date().toISOString(),
       ...txn,
+      userId: String(txn.userId),
     };
     if (!Array.isArray(this.data.xpTransactions)) {
       this.data.xpTransactions = [];
@@ -571,11 +572,27 @@ class DatabaseService {
 
   public getXpTransactionByReference(userId: string, referenceId: string, action?: string): XpTransaction | undefined {
     return (this.data.xpTransactions || []).find((t) => {
-      const matchUser = t.userId === userId;
+      const matchUser = String(t.userId) === String(userId);
       const matchRef = t.referenceId === referenceId;
       const matchAction = action ? t.action === action : true;
       return matchUser && matchRef && matchAction;
     });
+  }
+
+  // --- XP Transactions Retrieval for UI History ---
+  public getXpTransactions(): XpTransaction[] {
+    return this.data.xpTransactions || [];
+  }
+
+  public getAllXpTransactions(): XpTransaction[] {
+    return this.data.xpTransactions || [];
+  }
+
+  public getXpTransactionsByUser(userId: string): XpTransaction[] {
+    if (!this.data.xpTransactions) return [];
+    return this.data.xpTransactions.filter(
+      (t) => String(t.userId) === String(userId)
+    );
   }
 
   // --- MCQ & Questions ---
@@ -603,7 +620,7 @@ class DatabaseService {
 
   public getScheduledInterviewsByCandidate(candidateId: string): ScheduledInterview[] {
     if (!this.data.scheduledInterviews) this.data.scheduledInterviews = [];
-    return this.data.scheduledInterviews.filter((si) => si.candidateId === candidateId);
+    return this.data.scheduledInterviews.filter((si) => String(si.candidateId) === String(candidateId));
   }
 
   public getScheduledInterviewById(id: string): ScheduledInterview | undefined {
@@ -627,7 +644,7 @@ class DatabaseService {
   public getActiveAssessmentByCandidate(candidateId: string): SecureAssessmentSession | null {
     return (
       (this.data.secureAssessments || []).find(
-        (s) => s.candidateId === candidateId && s.status === 'IN_PROGRESS'
+        (s) => String(s.candidateId) === String(candidateId) && s.status === 'IN_PROGRESS'
       ) || null
     );
   }
@@ -659,9 +676,8 @@ class DatabaseService {
 
     const effectiveAssId = params.assessmentId || params.interviewId || `ass_${Date.now()}`;
 
-    // Existing session restore check
     const existing = this.data.secureAssessments.find(
-      (s) => (s.assessmentId === effectiveAssId || s.id === effectiveAssId) && s.candidateId === params.candidateId
+      (s) => (s.assessmentId === effectiveAssId || s.id === effectiveAssId) && String(s.candidateId) === String(params.candidateId)
     );
 
     if (existing) {
@@ -680,7 +696,7 @@ class DatabaseService {
     const now = new Date().toISOString();
     const session: SecureAssessmentSession = {
       id: `sec_ass_${Date.now()}_${Math.random().toString(36).substring(2, 7)}`,
-      candidateId: params.candidateId,
+      candidateId: String(params.candidateId),
       candidateName: params.candidateName,
       candidateEmail: params.candidateEmail,
       assessmentType: params.assessmentType,
