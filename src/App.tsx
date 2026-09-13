@@ -1,5 +1,5 @@
 import React, { useState } from 'react';
-import { BrowserRouter, Routes, Route, Navigate, Outlet } from 'react-router-dom';
+import { BrowserRouter, Routes, Route, Navigate, Outlet, useLocation } from 'react-router-dom';
 import { AuthProvider, useAuth } from './context/AuthContext';
 import { ThemeProvider } from './context/ThemeContext';
 import { AssessmentSecurityProvider, useAssessmentSecurity } from './context/AssessmentSecurityContext';
@@ -40,10 +40,24 @@ import { FloatingChatWidget } from './components/chat/FloatingChatWidget';
 const AppLayout: React.FC = () => {
   const [sidebarOpen, setSidebarOpen] = useState(false);
   const { isSecureMode, remainingSeconds, enterFullscreen, isFullscreen } = useAssessmentSecurity();
+  const location = useLocation();
+
+  // Saare active assessment / interview rooms jahan sidebar hide hona chahiye
+  const assessmentRoutes = [
+    '/interview/room',
+    '/attend-interview',
+    '/coding',
+    '/mcq'
+  ];
+
+  const isAssessmentActive = isSecureMode || assessmentRoutes.some((route) =>
+    location.pathname.toLowerCase().startsWith(route)
+  );
 
   return (
     <div className="min-h-screen bg-zinc-50 dark:bg-zinc-950 text-zinc-900 dark:text-zinc-100 flex flex-col font-sans transition-colors">
       <Navbar onToggleSidebar={() => setSidebarOpen((prev) => !prev)} />
+      
       {isSecureMode && (
         <SecureModeNotice
           remainingSeconds={remainingSeconds}
@@ -51,13 +65,27 @@ const AppLayout: React.FC = () => {
           isFullscreen={isFullscreen}
         />
       )}
-      <div className="flex flex-1">
-        <Sidebar isOpen={sidebarOpen} onClose={() => setSidebarOpen(false)} />
-        <main className={`flex-1 ${isSecureMode ? 'px-2 sm:px-4 py-4 w-full' : 'lg:pl-64 px-4 sm:px-8 py-8 max-w-7xl w-full mx-auto'}`}>
+
+      <div className="flex flex-1 relative">
+        {/* Assessment ya Interview room ke waqt Sidebar render NAHI hoga */}
+        {!isAssessmentActive && (
+          <Sidebar isOpen={sidebarOpen} onClose={() => setSidebarOpen(false)} />
+        )}
+
+        {/* Agar assessment active hai toh full width (0 padding), warna standard layout */}
+        <main
+          className={`flex-1 transition-all duration-200 ${
+            isAssessmentActive
+              ? 'w-full px-2 sm:px-4 py-3'
+              : 'lg:pl-64 px-4 sm:px-8 py-8 max-w-7xl w-full mx-auto'
+          }`}
+        >
           <Outlet />
         </main>
       </div>
-      {!isSecureMode && <FloatingChatWidget />}
+
+      {/* Floating Chat Widget sirf regular pages par dikhega, assessment me nahi */}
+      {!isAssessmentActive && <FloatingChatWidget />}
     </div>
   );
 };
@@ -74,7 +102,6 @@ const ProtectedRoute: React.FC<{ children: React.ReactNode }> = ({ children }) =
     );
   }
 
-  // Allow guest access if no auth for quick exploration, or redirect if needed
   if (!user) {
     return <Navigate to="/login" replace />;
   }
