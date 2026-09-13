@@ -6,10 +6,10 @@ import lombok.Data;
 import lombok.NoArgsConstructor;
 import org.springframework.data.annotation.Id;
 import org.springframework.data.mongodb.core.mapping.Document;
+import org.springframework.data.mongodb.core.index.Indexed;
 
 import java.time.Instant;
 import java.util.List;
-import org.springframework.data.mongodb.core.index.Indexed;
 
 @Data
 @Builder
@@ -48,7 +48,30 @@ public class User {
     private String level;
     private int currentStreak;
     private boolean emailVerified;
-    private boolean isOnLeaderboard;
+    
+    @Builder.Default
+    private Boolean isOnLeaderboard = true;
+    
     private Instant createdAt;
     private Instant updatedAt;
+
+    // Standard Boolean Check
+    public Boolean isOnLeaderboard() {
+        return Boolean.TRUE.equals(this.isOnLeaderboard);
+    }
+
+    // CandidateController / JSON compatibility getters
+    public Boolean getIsOnLeaderboard() {
+        return Boolean.TRUE.equals(this.isOnLeaderboard);
+    }
+
+    // CandidateController setter compatibility
+    public void setIsOnLeaderboard(Boolean isOnLeaderboard) {
+        this.isOnLeaderboard = Boolean.TRUE.equals(isOnLeaderboard);
+    }
+
+    // Lombok fallback setter
+    public void setOnLeaderboard(Boolean onLeaderboard) {
+        this.isOnLeaderboard = Boolean.TRUE.equals(onLeaderboard);
+    }
 }
