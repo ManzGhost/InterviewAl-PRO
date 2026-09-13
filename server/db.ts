@@ -1,6 +1,7 @@
 import fs from 'fs';
 import path from 'path';
 import { UserModel } from './models/UserModel';
+import { XpTransactionModel } from './models/XpTransactionModel';
 import {
   User,
   ResumeDocument,
@@ -87,8 +88,19 @@ class DatabaseService {
         })) as User[];
         console.log(`[MongoDB Atlas] Successfully loaded ${this.data.users.length} users into live memory.`);
       }
+
+      // Load persisted transactions from MongoDB Atlas 'xp_transactions' collection
+      const atlasTxns = await XpTransactionModel.find({}).sort({ createdAt: -1 }).lean();
+      if (atlasTxns && atlasTxns.length > 0) {
+        this.data.xpTransactions = atlasTxns.map((t: any) => ({
+          ...t,
+          id: t.id || t._id?.toString(),
+          userId: String(t.userId),
+        })) as XpTransaction[];
+        console.log(`[MongoDB Atlas] Successfully loaded ${this.data.xpTransactions.length} XP transactions into live memory.`);
+      }
     } catch (err: any) {
-      console.warn(`[MongoDB Atlas] Sync from Atlas waiting for DB connection...`);
+      console.warn(`[MongoDB Atlas] Sync from Atlas waiting for DB connection...`, err?.message);
     }
   }
 
@@ -252,6 +264,9 @@ class DatabaseService {
     this.save();
     UserModel.deleteOne({ id: userId }).catch((err: any) => {
       console.error(`[MongoDB Atlas] Error deleting user:`, err?.message);
+    });
+    XpTransactionModel.deleteMany({ userId: String(userId) }).catch((err: any) => {
+      console.error(`[MongoDB Atlas] Error deleting user transactions:`, err?.message);
     });
 
     return { success: true, deletedUser };
@@ -607,6 +622,7 @@ class DatabaseService {
     });
   }
 
+  // Permanently persists transaction into local store and MongoDB Atlas collection
   public recordTransaction(txn: Omit<XpTransaction, 'id' | 'createdAt'>): XpTransaction {
     const transaction: XpTransaction = {
       id: `xp_txn_${Date.now()}_${Math.random().toString(36).substring(2, 7)}`,
@@ -614,11 +630,18 @@ class DatabaseService {
       ...txn,
       userId: String(txn.userId),
     };
+
     if (!Array.isArray(this.data.xpTransactions)) {
       this.data.xpTransactions = [];
     }
     this.data.xpTransactions.unshift(transaction);
     this.save();
+
+    // Persist to MongoDB Atlas 'xp_transactions' collection
+    XpTransactionModel.create(transaction)
+      .then(() => console.log(`[MongoDB Atlas] Transaction successfully stored: ${transaction.id}`))
+      .catch((err: any) => console.warn(`[MongoDB Atlas] Error saving transaction to Atlas:`, err?.message));
+
     return transaction;
   }
 
