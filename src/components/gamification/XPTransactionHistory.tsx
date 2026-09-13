@@ -1,4 +1,4 @@
-import React, { useState, useEffect, useMemo } from 'react';
+import React, { useState, useEffect, useMemo, useCallback } from 'react';
 import {
   History,
   ArrowDownRight,
@@ -142,9 +142,11 @@ export const XPTransactionHistory: React.FC<XPTransactionHistoryProps> = ({
   limit,
 }) => {
   const [transactions, setTransactions] = useState<XpTransaction[]>(
-    initialTransactions || []
+    initialTransactions && initialTransactions.length > 0 ? initialTransactions : []
   );
-  const [loading, setLoading] = useState<boolean>(!initialTransactions);
+  const [loading, setLoading] = useState<boolean>(
+    !(initialTransactions && initialTransactions.length > 0)
+  );
   const [error, setError] = useState<string | null>(null);
 
   // Filters and Sorting
@@ -156,15 +158,15 @@ export const XPTransactionHistory: React.FC<XPTransactionHistoryProps> = ({
   const [selectedTx, setSelectedTx] = useState<XpTransaction | null>(null);
   const [copiedId, setCopiedId] = useState<string | null>(null);
 
-  // Resilient transaction fetching with Cache-Busting (_t timestamp) to avoid 304 Not Modified
-  const loadTransactions = async () => {
+  // Resilient single transaction fetcher with timestamp cache-buster
+  const loadTransactions = useCallback(async () => {
     setLoading(true);
     setError(null);
     try {
       let txns: XpTransaction[] = [];
+      const timestamp = Date.now();
 
       try {
-        const timestamp = Date.now();
         const res = await apiClient.get(`/gamification/xp-transactions?_t=${timestamp}`, {
           headers: {
             'Cache-Control': 'no-cache',
@@ -176,17 +178,18 @@ export const XPTransactionHistory: React.FC<XPTransactionHistoryProps> = ({
           txns = raw;
         } else if (Array.isArray(raw?.transactions)) {
           txns = raw.transactions;
-        } else if (Array.isArray(raw?.data)) {
-          txns = raw.data;
         } else if (Array.isArray(raw?.history)) {
           txns = raw.history;
+        } else if (Array.isArray(raw?.data)) {
+          txns = raw.data;
         }
       } catch (innerErr) {
-        // Fallback helper via xpService
         const res = await xpService.getMyTransactions();
         const raw = (res as any)?.data || res;
         if (Array.isArray(raw?.transactions)) {
           txns = raw.transactions;
+        } else if (Array.isArray(raw?.history)) {
+          txns = raw.history;
         } else if (Array.isArray(raw?.data)) {
           txns = raw.data;
         } else if (Array.isArray(raw)) {
@@ -205,16 +208,17 @@ export const XPTransactionHistory: React.FC<XPTransactionHistoryProps> = ({
     } finally {
       setLoading(false);
     }
-  };
+  }, []);
 
+  // Mount effect: runs only once when component mounts, preventing infinite loops
   useEffect(() => {
-    if (initialTransactions) {
+    if (initialTransactions && initialTransactions.length > 0) {
       setTransactions(initialTransactions);
       setLoading(false);
     } else {
       loadTransactions();
     }
-  }, [initialTransactions]);
+  }, [loadTransactions]);
 
   const handleRefresh = () => {
     if (onRefresh) {
@@ -244,7 +248,7 @@ export const XPTransactionHistory: React.FC<XPTransactionHistoryProps> = ({
 
   // Helper to determine if a transaction is a deduction
   const isDeductionTx = (tx: XpTransaction): boolean => {
-    return tx.action === 'DEDUCTION' || (tx.amount < 0 && !isRefundTx(tx));
+    return tx.action === 'DEDUCTION' || (Number(tx.amount) < 0 && !isRefundTx(tx));
   };
 
   // Calculate summary statistics
@@ -255,7 +259,7 @@ export const XPTransactionHistory: React.FC<XPTransactionHistoryProps> = ({
     let totalRefundsAmount = 0;
 
     transactions.forEach((tx) => {
-      const absAmount = Math.abs(tx.amount);
+      const absAmount = Math.abs(Number(tx.amount) || 0);
       if (isDeductionTx(tx)) {
         totalDeductionsCount += 1;
         totalDeductionsAmount += absAmount;
@@ -293,11 +297,11 @@ export const XPTransactionHistory: React.FC<XPTransactionHistoryProps> = ({
       const query = searchQuery.toLowerCase().trim();
       result = result.filter((t) => {
         const config = TRANSACTION_TYPE_CONFIG[t.type];
-        const typeName = (config?.label || t.type).toLowerCase();
+        const typeName = (config?.label || t.type || '').toLowerCase();
         const desc = (t.description || '').toLowerCase();
         const reason = (t.reason || '').toLowerCase();
         const refId = (t.referenceId || '').toLowerCase();
-        const txId = (t.id || '').toLowerCase();
+        const txId = (t.id || (t as any)._id || '').toLowerCase();
         return (
           typeName.includes(query) ||
           desc.includes(query) ||
@@ -310,8 +314,8 @@ export const XPTransactionHistory: React.FC<XPTransactionHistoryProps> = ({
 
     // Chronological Sort: Compare timestamps
     result.sort((a, b) => {
-      const timeA = new Date(a.createdAt).getTime() || 0;
-      const timeB = new Date(b.createdAt).getTime() || 0;
+      const timeA = new Date(a.createdAt || 0).getTime() || 0;
+      const timeB = new Date(b.createdAt || 0).getTime() || 0;
       return sortOrder === 'NEWEST' ? timeB - timeA : timeA - timeB;
     });
 
@@ -324,8 +328,11 @@ export const XPTransactionHistory: React.FC<XPTransactionHistoryProps> = ({
 
   // Format date nicely
   const formatTimestamp = (
-    isoDate: string
+    isoDate?: string
   ): { formatted: string; dateOnly: string; timeOnly: string } => {
+    if (!isoDate) {
+      return { formatted: 'Recent', dateOnly: 'Recent', timeOnly: '' };
+    }
     try {
       const d = new Date(isoDate);
       if (isNaN(d.getTime())) {
@@ -348,12 +355,13 @@ export const XPTransactionHistory: React.FC<XPTransactionHistoryProps> = ({
         timeOnly: timeStr,
       };
     } catch {
-      return { formatted: isoDate, dateOnly: isoDate, timeOnly: '' };
+      return { formatted: String(isoDate), dateOnly: String(isoDate), timeOnly: '' };
     }
   };
 
   // Helper for relative time (e.g. 5 mins ago)
-  const getRelativeTime = (isoDate: string): string => {
+  const getRelativeTime = (isoDate?: string): string => {
+    if (!isoDate) return '';
     try {
       const ms = new Date(isoDate).getTime();
       const diff = Math.floor((Date.now() - ms) / 1000);
@@ -633,7 +641,8 @@ export const XPTransactionHistory: React.FC<XPTransactionHistoryProps> = ({
         {/* Chronological List of Transactions */}
         {!loading && filteredTransactions.length > 0 && (
           <div className="space-y-2.5">
-            {filteredTransactions.map((tx) => {
+            {filteredTransactions.map((tx, idx) => {
+              const txKey = tx.id || (tx as any)._id || `tx-${idx}`;
               const isDeduction = isDeductionTx(tx);
               const isRefund = isRefundTx(tx);
               const config =
@@ -648,13 +657,13 @@ export const XPTransactionHistory: React.FC<XPTransactionHistoryProps> = ({
               const Icon = config.icon;
               const { formatted } = formatTimestamp(tx.createdAt);
               const relativeTime = getRelativeTime(tx.createdAt);
-              const absAmount = Math.abs(tx.amount);
+              const absAmount = Math.abs(Number(tx.amount) || 0);
               const isStatusRefunded = tx.status === 'REFUNDED';
 
               return (
                 <div
-                  key={tx.id}
-                  id={`xp-txn-card-${tx.id}`}
+                  key={txKey}
+                  id={`xp-txn-card-${txKey}`}
                   onClick={() => {
                     setSelectedTx(tx);
                     if (onSelectTransaction) onSelectTransaction(tx);
@@ -794,7 +803,7 @@ export const XPTransactionHistory: React.FC<XPTransactionHistoryProps> = ({
                     Transaction Audit Details
                   </h3>
                   <p className="text-xs text-zinc-500 dark:text-zinc-400">
-                    ID: {selectedTx.id}
+                    ID: {selectedTx.id || (selectedTx as any)._id}
                   </p>
                 </div>
               </div>
@@ -823,8 +832,8 @@ export const XPTransactionHistory: React.FC<XPTransactionHistoryProps> = ({
                     }`}
                   >
                     {isDeductionTx(selectedTx)
-                      ? `-${Math.abs(selectedTx.amount)} XP`
-                      : `+${Math.abs(selectedTx.amount)} XP`}
+                      ? `-${Math.abs(Number(selectedTx.amount) || 0)} XP`
+                      : `+${Math.abs(Number(selectedTx.amount) || 0)} XP`}
                   </div>
                 </div>
 
@@ -910,12 +919,12 @@ export const XPTransactionHistory: React.FC<XPTransactionHistoryProps> = ({
                   <button
                     type="button"
                     onClick={() =>
-                      copyToClipboard(selectedTx.referenceId!, selectedTx.id)
+                      copyToClipboard(selectedTx.referenceId!, selectedTx.id || (selectedTx as any)._id)
                     }
                     className="p-1.5 rounded-lg border border-zinc-200 dark:border-zinc-700 hover:bg-zinc-200 dark:hover:bg-zinc-700 text-zinc-600 dark:text-zinc-300 transition-colors cursor-pointer shrink-0"
                     title="Copy reference ID"
                   >
-                    {copiedId === selectedTx.id ? (
+                    {copiedId === (selectedTx.id || (selectedTx as any)._id) ? (
                       <Check className="w-3.5 h-3.5 text-emerald-600" />
                     ) : (
                       <Copy className="w-3.5 h-3.5" />
