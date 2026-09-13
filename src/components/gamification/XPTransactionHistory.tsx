@@ -156,7 +156,7 @@ export const XPTransactionHistory: React.FC<XPTransactionHistoryProps> = ({
   const [selectedTx, setSelectedTx] = useState<XpTransaction | null>(null);
   const [copiedId, setCopiedId] = useState<string | null>(null);
 
-  // Resilient transaction fetching via apiClient with automatic JWT token attachment
+  // Resilient transaction fetching with Cache-Busting (_t timestamp) to avoid 304 Not Modified
   const loadTransactions = async () => {
     setLoading(true);
     setError(null);
@@ -164,8 +164,13 @@ export const XPTransactionHistory: React.FC<XPTransactionHistoryProps> = ({
       let txns: XpTransaction[] = [];
 
       try {
-        // apiClient automatically injects Authorization header from localStorage via api.ts interceptor
-        const res = await apiClient.get('/gamification/xp-transactions');
+        const timestamp = Date.now();
+        const res = await apiClient.get(`/gamification/xp-transactions?_t=${timestamp}`, {
+          headers: {
+            'Cache-Control': 'no-cache',
+            'Pragma': 'no-cache',
+          },
+        });
         const raw = res.data;
         if (Array.isArray(raw)) {
           txns = raw;

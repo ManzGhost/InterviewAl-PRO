@@ -207,23 +207,35 @@ gamificationRouter.get('/xp-balance', requireAuth, (req: AuthenticatedRequest, r
   });
 });
 
-// GET /api/gamification/xp-transactions (Direct MongoDB Atlas Query + Auto-Backfill)
+// GET /api/gamification/xp-transactions (Direct MongoDB Atlas Query + No-Cache + Flexible Lookup)
 gamificationRouter.get('/xp-transactions', requireAuth, async (req: AuthenticatedRequest, res: Response) => {
+  // 1. Force strict no-cache so browser never gets 304 Not Modified
+  res.setHeader('Cache-Control', 'no-store, no-cache, must-revalidate, proxy-revalidate');
+  res.setHeader('Pragma', 'no-cache');
+  res.setHeader('Expires', '0');
+
   try {
     const user = req.user!;
     const userIdStr = String(user.id || (user as any)._id || '').trim();
     const userEmailStr = String(user.email || '').trim().toLowerCase();
 
-    // 1. Direct fetch from MongoDB Atlas 'xp_transactions' collection
+    // 2. Query MongoDB Atlas directly with flexible matching (userId exact, regex, or email)
     let userTxns: any[] = [];
     try {
-      userTxns = await XpTransactionModel.find({
-        $or: [
-          { userId: userIdStr },
-          { userId: String(user.id) },
-          { userEmail: userEmailStr },
-        ],
-      })
+      const orConditions: any[] = [
+        { userId: userIdStr },
+        { userEmail: userEmailStr },
+      ];
+
+      if (user.id && String(user.id) !== userIdStr) {
+        orConditions.push({ userId: String(user.id) });
+      }
+
+      if (userIdStr.length > 3) {
+        orConditions.push({ userId: { $regex: new RegExp(userIdStr, 'i') } });
+      }
+
+      userTxns = await XpTransactionModel.find({ $or: orConditions })
         .sort({ createdAt: -1 })
         .lean();
     } catch (err: any) {
@@ -233,14 +245,17 @@ gamificationRouter.get('/xp-transactions', requireAuth, async (req: Authenticate
     // Fallback to in-memory db cache if Atlas returned empty
     if (!userTxns || userTxns.length === 0) {
       const allTxns = db.getAllXpTransactions ? db.getAllXpTransactions() : db.getXpTransactions();
-      userTxns = allTxns.filter((t: any) => {
-        const matchId = String(t.userId).trim() === userIdStr || (user.id && String(t.userId).trim() === String(user.id).trim());
-        const matchEmail = t.userEmail && String(t.userEmail).trim().toLowerCase() === userEmailStr;
+      userTxns = (allTxns || []).filter((t: any) => {
+        const matchId =
+          String(t.userId).trim() === userIdStr ||
+          (user.id && String(t.userId).trim() === String(user.id).trim());
+        const matchEmail =
+          t.userEmail && String(t.userEmail).trim().toLowerCase() === userEmailStr;
         return matchId || matchEmail;
       });
     }
 
-    // 2. Auto-backfill if balance > 0 but transaction collection was empty
+    // 3. Fallback auto-backfill if balance exists but history collection was empty
     const currentPoints = user.xpPoints || 0;
     if (userTxns.length === 0 && currentPoints > 0) {
       const backfillTxn = db.recordTransaction({
@@ -259,21 +274,31 @@ gamificationRouter.get('/xp-transactions', requireAuth, async (req: Authenticate
       userTxns = [backfillTxn];
     }
 
-    // 3. Calculate summary metrics
+    // 4. Calculate summary metrics for UI display cards
     const deductionsList = userTxns.filter(
       (t: any) => Number(t.amount) < 0 || t.action === 'DEDUCTION' || t.type === 'XP_DEDUCTED'
     );
     const refundsList = userTxns.filter(
-      (t: any) => Number(t.amount) > 0 && (t.action === 'ADDITION' || String(t.type || '').includes('REFUND') || t.type === 'BONUS_EARNED')
+      (t: any) =>
+        Number(t.amount) > 0 &&
+        (t.action === 'ADDITION' ||
+          String(t.type || '').includes('REFUND') ||
+          t.type === 'BONUS_EARNED')
     );
 
-    const totalDeductions = deductionsList.reduce((sum: number, t: any) => sum + Math.abs(Number(t.amount) || 0), 0);
-    const totalRefunds = refundsList.reduce((sum: number, t: any) => sum + (Number(t.amount) || 0), 0);
+    const totalDeductions = deductionsList.reduce(
+      (sum: number, t: any) => sum + Math.abs(Number(t.amount) || 0),
+      0
+    );
+    const totalRefunds = refundsList.reduce(
+      (sum: number, t: any) => sum + (Number(t.amount) || 0),
+      0
+    );
 
     return res.json({
       success: true,
       transactions: userTxns,
-      data: userTxns, // fallback for components expecting res.data.data
+      data: userTxns,
       history: userTxns,
       totalTransactions: userTxns.length,
       totalCount: userTxns.length,
